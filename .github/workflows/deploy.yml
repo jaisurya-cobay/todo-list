@@ -1,0 +1,32 @@
+name: Deploy Pipeline
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Build (example)
+        run: echo "Building..."
+
+      - name: Deploy (example)
+        run: echo "Deploying..."
+
+      - name: Update Jira after deployment
+        run: |
+          ISSUE=$(git log -1 --pretty=%B | grep -oE '[A-Z]+-[0-9]+')
+
+          if [ -n "$ISSUE" ]; then
+            curl -X POST \
+            -u ${{ secrets.JIRA_EMAIL }}:${{ secrets.JIRA_API_TOKEN }} \
+            -H "Content-Type: application/json" \
+            --data "{\"body\":\"🚀 Deployed to production\"}" \
+            ${{ secrets.JIRA_BASE_URL }}/rest/api/3/issue/$ISSUE/comment
+          fi
