@@ -12,6 +12,7 @@ const STORAGE_KEY = "todo-app:v1";
  * @property {boolean} completed
  * @property {number} createdAt
  * @property {number} updatedAt
+ * @property {"low"|"medium"|"high"} priority
  */
 
 /**
@@ -47,6 +48,7 @@ function loadTodos() {
           completed: Boolean(t?.completed),
           createdAt: Number.isFinite(t?.createdAt) ? t.createdAt : Date.now(),
           updatedAt: Number.isFinite(t?.updatedAt) ? t.updatedAt : Date.now(),
+          priority: ["low", "medium", "high"].includes(t?.priority) ? t.priority : "medium",
         };
       })
       .filter(Boolean);
@@ -225,6 +227,7 @@ function addTodo(title) {
     completed: false,
     createdAt: now,
     updatedAt: now,
+    priority: "medium",
   };
   upsert([todo, ...todos]);
 }

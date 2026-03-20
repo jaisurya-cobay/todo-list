@@ -1,15 +1,12 @@
-name: PR Merge - Jira Done + Release
+name: PR Merged to Develop - Jira QA
 
 on:
   pull_request:
     types: [closed]
-    branches: [main]
-
-permissions:
-  contents: write
+    branches: [develop]
 
 jobs:
-  update-jira-and-release:
+  transition-to-qa:
     if: github.event.pull_request.merged == true
     runs-on: ubuntu-latest
     steps:
@@ -24,7 +21,6 @@ jobs:
           PR_BODY="${{ github.event.pull_request.body }}"
           BRANCH="${{ github.event.pull_request.head.ref }}"
 
-          # Collect unique issue keys from PR title, body, and branch name
           ALL_TEXT="${PR_TITLE} ${PR_BODY} ${BRANCH}"
           KEYS=$(echo "$ALL_TEXT" | grep -oE '[A-Z]+-[0-9]+' | sort -u | tr '\n' ' ')
 
@@ -37,7 +33,7 @@ jobs:
             echo "found=true" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Transition issues to Done + comment
+      - name: Transition issues to QA
         if: steps.issues.outputs.found == 'true'
         env:
           JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
@@ -49,60 +45,29 @@ jobs:
           REPO="${{ github.repository }}"
           MERGED_BY="${{ github.event.pull_request.merged_by.login }}"
 
+          # TODO: Replace 51 with your actual "QA" transition ID
+          # To find it: curl -u email:token https://cobay.atlassian.net/rest/api/3/issue/XPRMNTS-4/transitions
+          QA_TRANSITION_ID="41"
+
           for KEY in ${{ steps.issues.outputs.keys }}; do
             echo "Processing ${KEY}..."
 
-            # Transition to Done
+            # Transition to QA
             curl -s -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
               -H "Content-Type: application/json" \
               -X POST \
               "${JIRA_BASE_URL}/rest/api/3/issue/${KEY}/transitions" \
-              -d '{"transition":{"id":"31"}}'
+              -d "{\"transition\":{\"id\":\"${QA_TRANSITION_ID}\"}}"
 
             # Add merge comment
             curl -s -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
               -H "Content-Type: application/json" \
               -X POST \
               "${JIRA_BASE_URL}/rest/api/3/issue/${KEY}/comment" \
-              -d "{\"body\":{\"type\":\"doc\",\"version\":1,\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"PR #${PR_NUM} merged to main by ${MERGED_BY}\"},{\"type\":\"hardBreak\"},{\"type\":\"text\",\"text\":\"Title: ${PR_TITLE}\"},{\"type\":\"hardBreak\"},{\"type\":\"text\",\"text\":\"Repo: ${REPO}\"}]}]}}"
+              -d "{\"body\":{\"type\":\"doc\",\"version\":1,\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"PR #${PR_NUM} merged to develop by ${MERGED_BY}\"},{\"type\":\"hardBreak\"},{\"type\":\"text\",\"text\":\"Title: ${PR_TITLE}\"},{\"type\":\"hardBreak\"},{\"type\":\"text\",\"text\":\"Ready for QA testing\"}]}]}}"
 
-            echo "  -> ${KEY} transitioned to Done"
+            echo "  -> ${KEY} transitioned to QA"
           done
 
-          echo "### Jira Issues Closed" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Jira Issues Moved to QA" >> "$GITHUB_STEP_SUMMARY"
           echo "Issues: ${{ steps.issues.outputs.keys }}" >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Create release entry
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          DATE=$(date +%Y-%m-%d)
-          TAG="release-${DATE}-${{ github.run_number }}"
-          PR_TITLE="${{ github.event.pull_request.title }}"
-          PR_NUM="${{ github.event.pull_request.number }}"
-          KEYS="${{ steps.issues.outputs.keys }}"
-
-          # Build release notes
-          NOTES="## What's Changed\n\n"
-          NOTES+="- ${PR_TITLE} (#${PR_NUM})\n\n"
-
-          if [ -n "$KEYS" ]; then
-            NOTES+="## Jira Issues\n\n"
-            for KEY in $KEYS; do
-              NOTES+="- [${KEY}](${JIRA_BASE_URL:-https://cobay.atlassian.net}/browse/${KEY})\n"
-            done
-          fi
-
-          NOTES+="\n**Deployed:** ${DATE}"
-
-          # Create lightweight tag and release
-          git tag "$TAG"
-          git push origin "$TAG"
-
-          gh release create "$TAG" \
-            --title "Release ${DATE} (#${{ github.run_number }})" \
-            --notes "$(echo -e "$NOTES")" \
-            --latest
-
-          echo "### Release Created" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Tag:** ${TAG}" >> "$GITHUB_STEP_SUMMARY"
