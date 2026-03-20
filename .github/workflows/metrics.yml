@@ -1,0 +1,130 @@
+name: Weekly Dev Metrics (DORA)
+
+on:
+  schedule:
+    - cron: "0 9 * * 1" # Every Monday 9 AM UTC
+  workflow_dispatch: # Allow manual trigger
+
+permissions:
+  contents: read
+  pull-requests: read
+  issues: read
+
+jobs:
+  collect-metrics:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
+      JIRA_USER_EMAIL: ${{ secrets.JIRA_USER_EMAIL }}
+      JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Collect PR Metrics
+        id: pr_metrics
+        run: |
+          SINCE=$(date -d '7 days ago' +%Y-%m-%dT00:00:00Z 2>/dev/null || date -v-7d +%Y-%m-%dT00:00:00Z)
+          REPO="${{ github.repository }}"
+
+          echo "## PR Metrics (Last 7 Days)" >> metrics_report.md
+          echo "" >> metrics_report.md
+
+          # Merged PRs
+          MERGED=$(gh pr list --repo "$REPO" --state merged --json number,title,mergedAt,createdAt,additions,deletions \
+            --jq "[.[] | select(.mergedAt >= \"${SINCE}\")]")
+
+          MERGED_COUNT=$(echo "$MERGED" | jq 'length')
+          echo "- **PRs Merged:** ${MERGED_COUNT}" >> metrics_report.md
+
+          # Average time to merge (hours)
+          if [ "$MERGED_COUNT" -gt 0 ]; then
+            AVG_HOURS=$(echo "$MERGED" | jq '[.[] |
+              (((.mergedAt | fromdateiso8601) - (.createdAt | fromdateiso8601)) / 3600)
+            ] | add / length | floor')
+            echo "- **Avg Lead Time to Merge:** ${AVG_HOURS}h" >> metrics_report.md
+
+            TOTAL_ADDITIONS=$(echo "$MERGED" | jq '[.[].additions] | add')
+            TOTAL_DELETIONS=$(echo "$MERGED" | jq '[.[].deletions] | add')
+            echo "- **Lines Changed:** +${TOTAL_ADDITIONS} / -${TOTAL_DELETIONS}" >> metrics_report.md
+          else
+            echo "- **Avg Lead Time to Merge:** N/A" >> metrics_report.md
+          fi
+
+          # Open PRs
+          OPEN_COUNT=$(gh pr list --repo "$REPO" --state open --json number | jq 'length')
+          echo "- **Open PRs:** ${OPEN_COUNT}" >> metrics_report.md
+          echo "" >> metrics_report.md
+
+          echo "merged_count=${MERGED_COUNT}" >> "$GITHUB_OUTPUT"
+
+      - name: Collect Deployment Metrics
+        id: deploy_metrics
+        run: |
+          SINCE=$(date -d '7 days ago' +%Y-%m-%dT00:00:00Z 2>/dev/null || date -v-7d +%Y-%m-%dT00:00:00Z)
+          REPO="${{ github.repository }}"
+
+          echo "## Deployment Metrics (Last 7 Days)" >> metrics_report.md
+          echo "" >> metrics_report.md
+
+          # Count releases as deployments
+          RELEASES=$(gh release list --repo "$REPO" --json tagName,createdAt \
+            --jq "[.[] | select(.createdAt >= \"${SINCE}\")]" 2>/dev/null || echo "[]")
+
+          DEPLOY_COUNT=$(echo "$RELEASES" | jq 'length')
+          echo "- **Deployments (Releases):** ${DEPLOY_COUNT}" >> metrics_report.md
+
+          # Deployment frequency
+          if [ "$DEPLOY_COUNT" -gt 0 ]; then
+            FREQ=$(echo "scale=1; 7 / $DEPLOY_COUNT" | bc 2>/dev/null || echo "N/A")
+            echo "- **Avg Days Between Deploys:** ${FREQ}" >> metrics_report.md
+          else
+            echo "- **Deploy Frequency:** No deployments this week" >> metrics_report.md
+          fi
+          echo "" >> metrics_report.md
+
+      - name: Collect Bug Metrics from Jira
+        run: |
+          echo "## Bug Metrics (Jira - XPRMNTS)" >> metrics_report.md
+          echo "" >> metrics_report.md
+
+          # Open bugs
+          OPEN_BUGS=$(curl -s -u "${JIRA_USER_EMAIL}:${JIRA_API_TOKEN}" \
+            -H "Content-Type: application/json" \
+            "${JIRA_BASE_URL}/rest/api/3/search?jql=project%3DXPRMNTS%20AND%20issuetype%3DBug%20AND%20statusCategory%20!%3D%20Done&fields=summary,status,priority" \
+            | jq '.total // 0')
+          echo "- **Open Bugs:** ${OPEN_BUGS}" >> metrics_report.md
+
+          # Bugs resolved this week
+          RESOLVED_BUGS=$(curl -s -u "${JIRA_USER_EMAIL}:${JIRA_API_TOKEN}" \
+            -H "Content-Type: application/json" \
+            "${JIRA_BASE_URL}/rest/api/3/search?jql=project%3DXPRMNTS%20AND%20issuetype%3DBug%20AND%20status%3DDone%20AND%20resolved%20>%3D%20-7d&fields=summary" \
+            | jq '.total // 0')
+          echo "- **Bugs Resolved (7d):** ${RESOLVED_BUGS}" >> metrics_report.md
+
+          # Bugs created this week
+          CREATED_BUGS=$(curl -s -u "${JIRA_USER_EMAIL}:${JIRA_API_TOKEN}" \
+            -H "Content-Type: application/json" \
+            "${JIRA_BASE_URL}/rest/api/3/search?jql=project%3DXPRMNTS%20AND%20issuetype%3DBug%20AND%20created%20>%3D%20-7d&fields=summary" \
+            | jq '.total // 0')
+          echo "- **Bugs Created (7d):** ${CREATED_BUGS}" >> metrics_report.md
+
+          # Change Failure Rate (bugs created / PRs merged)
+          echo "" >> metrics_report.md
+
+      - name: DORA Summary
+        run: |
+          echo "## DORA Indicators" >> metrics_report.md
+          echo "" >> metrics_report.md
+          echo "| Metric | Description |" >> metrics_report.md
+          echo "|--------|-------------|" >> metrics_report.md
+          echo "| **Deployment Frequency** | Releases per week (target: daily) |" >> metrics_report.md
+          echo "| **Lead Time for Changes** | PR open to merge (target: < 24h) |" >> metrics_report.md
+          echo "| **Change Failure Rate** | Bugs created / PRs merged (target: < 15%) |" >> metrics_report.md
+          echo "| **MTTR** | Avg bug resolution time (target: < 24h) |" >> metrics_report.md
+          echo "" >> metrics_report.md
+
+          cat metrics_report.md
+
+          echo "---" >> "$GITHUB_STEP_SUMMARY"
+          cat metrics_report.md >> "$GITHUB_STEP_SUMMARY"

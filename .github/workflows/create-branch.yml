@@ -1,0 +1,80 @@
+name: Create Branch from Jira Issue
+
+on:
+  workflow_dispatch:
+    inputs:
+      issue_key:
+        description: "Jira issue key (e.g. XPRMNTS-4)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  create-branch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch Jira issue summary
+        id: jira
+        env:
+          JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
+          JIRA_USER_EMAIL: ${{ secrets.JIRA_USER_EMAIL }}
+          JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+        run: |
+          ISSUE_KEY="${{ inputs.issue_key }}"
+
+          RESPONSE=$(curl -s -u "${JIRA_USER_EMAIL}:${JIRA_API_TOKEN}" \
+            -H "Content-Type: application/json" \
+            "${JIRA_BASE_URL}/rest/api/3/issue/${ISSUE_KEY}?fields=summary")
+
+          SUMMARY=$(echo "$RESPONSE" | jq -r '.fields.summary // empty')
+          if [ -z "$SUMMARY" ]; then
+            echo "::error::Could not fetch issue ${ISSUE_KEY}. Response: ${RESPONSE}"
+            exit 1
+          fi
+
+          # Slugify: lowercase, replace non-alphanum with hyphens, trim
+          SLUG=$(echo "$SUMMARY" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/-/g' | sed 's/-\+/-/g' | sed 's/^-//;s/-$//' | cut -c1-50)
+          BRANCH_NAME="${ISSUE_KEY}-${SLUG}"
+
+          echo "branch=${BRANCH_NAME}" >> "$GITHUB_OUTPUT"
+          echo "summary=${SUMMARY}" >> "$GITHUB_OUTPUT"
+
+      - name: Create and push branch
+        run: |
+          BRANCH="${{ steps.jira.outputs.branch }}"
+          git checkout -b "$BRANCH"
+          git push origin "$BRANCH"
+          echo "### Branch created" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Issue:** ${{ inputs.issue_key }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Branch:** \`${BRANCH}\`" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Transition Jira to In Progress
+        env:
+          JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
+          JIRA_USER_EMAIL: ${{ secrets.JIRA_USER_EMAIL }}
+          JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+        run: |
+          curl -s -u "${JIRA_USER_EMAIL}:${JIRA_API_TOKEN}" \
+            -H "Content-Type: application/json" \
+            -X POST \
+            "${JIRA_BASE_URL}/rest/api/3/issue/${{ inputs.issue_key }}/transitions" \
+            -d '{"transition":{"id":"21"}}'
+
+      - name: Add comment to Jira
+        env:
+          JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
+          JIRA_USER_EMAIL: ${{ secrets.JIRA_USER_EMAIL }}
+          JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+        run: |
+          BRANCH="${{ steps.jira.outputs.branch }}"
+          REPO="${{ github.repository }}"
+
+          curl -s -u "${JIRA_USER_EMAIL}:${JIRA_API_TOKEN}" \
+            -H "Content-Type: application/json" \
+            -X POST \
+            "${JIRA_BASE_URL}/rest/api/3/issue/${{ inputs.issue_key }}/comment" \
+            -d "{\"body\":{\"type\":\"doc\",\"version\":1,\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"Branch created: ${BRANCH} in ${REPO}\"}]}]}}"

@@ -1,0 +1,108 @@
+name: PR Merge - Jira Done + Release
+
+on:
+  pull_request:
+    types: [closed]
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  update-jira-and-release:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Extract Jira issue keys from PR
+        id: issues
+        run: |
+          PR_TITLE="${{ github.event.pull_request.title }}"
+          PR_BODY="${{ github.event.pull_request.body }}"
+          BRANCH="${{ github.event.pull_request.head.ref }}"
+
+          # Collect unique issue keys from PR title, body, and branch name
+          ALL_TEXT="${PR_TITLE} ${PR_BODY} ${BRANCH}"
+          KEYS=$(echo "$ALL_TEXT" | grep -oE '[A-Z]+-[0-9]+' | sort -u | tr '\n' ' ')
+
+          if [ -z "$KEYS" ]; then
+            echo "No Jira issue keys found. Skipping."
+            echo "found=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Found issue keys: ${KEYS}"
+            echo "keys=${KEYS}" >> "$GITHUB_OUTPUT"
+            echo "found=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Transition issues to Done + comment
+        if: steps.issues.outputs.found == 'true'
+        env:
+          JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
+          JIRA_USER_EMAIL: ${{ secrets.JIRA_USER_EMAIL }}
+          JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+        run: |
+          PR_NUM="${{ github.event.pull_request.number }}"
+          PR_TITLE="${{ github.event.pull_request.title }}"
+          REPO="${{ github.repository }}"
+          MERGED_BY="${{ github.event.pull_request.merged_by.login }}"
+
+          for KEY in ${{ steps.issues.outputs.keys }}; do
+            echo "Processing ${KEY}..."
+
+            # Transition to Done
+            curl -s -u "${JIRA_USER_EMAIL}:${JIRA_API_TOKEN}" \
+              -H "Content-Type: application/json" \
+              -X POST \
+              "${JIRA_BASE_URL}/rest/api/3/issue/${KEY}/transitions" \
+              -d '{"transition":{"id":"31"}}'
+
+            # Add merge comment
+            curl -s -u "${JIRA_USER_EMAIL}:${JIRA_API_TOKEN}" \
+              -H "Content-Type: application/json" \
+              -X POST \
+              "${JIRA_BASE_URL}/rest/api/3/issue/${KEY}/comment" \
+              -d "{\"body\":{\"type\":\"doc\",\"version\":1,\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"PR #${PR_NUM} merged to main by ${MERGED_BY}\"},{\"type\":\"hardBreak\"},{\"type\":\"text\",\"text\":\"Title: ${PR_TITLE}\"},{\"type\":\"hardBreak\"},{\"type\":\"text\",\"text\":\"Repo: ${REPO}\"}]}]}}"
+
+            echo "  -> ${KEY} transitioned to Done"
+          done
+
+          echo "### Jira Issues Closed" >> "$GITHUB_STEP_SUMMARY"
+          echo "Issues: ${{ steps.issues.outputs.keys }}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Create release entry
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          DATE=$(date +%Y-%m-%d)
+          TAG="release-${DATE}-${{ github.run_number }}"
+          PR_TITLE="${{ github.event.pull_request.title }}"
+          PR_NUM="${{ github.event.pull_request.number }}"
+          KEYS="${{ steps.issues.outputs.keys }}"
+
+          # Build release notes
+          NOTES="## What's Changed\n\n"
+          NOTES+="- ${PR_TITLE} (#${PR_NUM})\n\n"
+
+          if [ -n "$KEYS" ]; then
+            NOTES+="## Jira Issues\n\n"
+            for KEY in $KEYS; do
+              NOTES+="- [${KEY}](${JIRA_BASE_URL:-https://cobay.atlassian.net}/browse/${KEY})\n"
+            done
+          fi
+
+          NOTES+="\n**Deployed:** ${DATE}"
+
+          # Create lightweight tag and release
+          git tag "$TAG"
+          git push origin "$TAG"
+
+          gh release create "$TAG" \
+            --title "Release ${DATE} (#${{ github.run_number }})" \
+            --notes "$(echo -e "$NOTES")" \
+            --latest
+
+          echo "### Release Created" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Tag:** ${TAG}" >> "$GITHUB_STEP_SUMMARY"

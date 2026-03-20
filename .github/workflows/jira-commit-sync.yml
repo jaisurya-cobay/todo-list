@@ -1,0 +1,62 @@
+name: Sync Commits to Jira
+
+on:
+  push:
+    branches-ignore: [main]
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Extract Jira issue key and comment
+        env:
+          JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
+          JIRA_USER_EMAIL: ${{ secrets.JIRA_USER_EMAIL }}
+          JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+        run: |
+          BRANCH="${GITHUB_REF_NAME}"
+          REPO="${{ github.repository }}"
+          SHA="${{ github.sha }}"
+          SHORT_SHA="${SHA:0:7}"
+          COMMIT_MSG=$(git log -1 --pretty=format:'%s')
+          AUTHOR=$(git log -1 --pretty=format:'%an')
+
+          # Extract issue key from branch name (e.g., XPRMNTS-123-some-feature)
+          ISSUE_KEY=$(echo "$BRANCH" | grep -oE '[A-Z]+-[0-9]+' | head -1)
+
+          # Fallback: extract from commit message
+          if [ -z "$ISSUE_KEY" ]; then
+            ISSUE_KEY=$(echo "$COMMIT_MSG" | grep -oE '[A-Z]+-[0-9]+' | head -1)
+          fi
+
+          if [ -z "$ISSUE_KEY" ]; then
+            echo "No Jira issue key found in branch name or commit message. Skipping."
+            exit 0
+          fi
+
+          echo "Found issue key: ${ISSUE_KEY}"
+
+          # Transition to In Progress (idempotent - Jira ignores if already in that state)
+          curl -s -u "${JIRA_USER_EMAIL}:${JIRA_API_TOKEN}" \
+            -H "Content-Type: application/json" \
+            -X POST \
+            "${JIRA_BASE_URL}/rest/api/3/issue/${ISSUE_KEY}/transitions" \
+            -d '{"transition":{"id":"21"}}'
+
+          # Add commit as comment
+          COMMENT_TEXT="Commit ${SHORT_SHA} by ${AUTHOR}: ${COMMIT_MSG}\nBranch: ${BRANCH}\nRepo: ${REPO}"
+
+          curl -s -u "${JIRA_USER_EMAIL}:${JIRA_API_TOKEN}" \
+            -H "Content-Type: application/json" \
+            -X POST \
+            "${JIRA_BASE_URL}/rest/api/3/issue/${ISSUE_KEY}/comment" \
+            -d "{\"body\":{\"type\":\"doc\",\"version\":1,\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"Commit ${SHORT_SHA} by ${AUTHOR}: ${COMMIT_MSG}\"},{\"type\":\"hardBreak\"},{\"type\":\"text\",\"text\":\"Branch: ${BRANCH} | Repo: ${REPO}\"}]}]}}"
+
+          echo "### Jira Updated" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Issue:** ${ISSUE_KEY}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Commit:** ${SHORT_SHA}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Status:** In Progress" >> "$GITHUB_STEP_SUMMARY"
