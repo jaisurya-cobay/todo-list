@@ -40,13 +40,6 @@ jobs:
 
           echo "Found issue key: ${ISSUE_KEY}"
 
-          # Transition to In Progress (idempotent - Jira ignores if already in that state)
-          curl -s -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
-            -H "Content-Type: application/json" \
-            -X POST \
-            "${JIRA_BASE_URL}/rest/api/3/issue/${ISSUE_KEY}/transitions" \
-            -d '{"transition":{"id":"21"}}'
-
           # Add commit as comment
           COMMENT_TEXT="Commit ${SHORT_SHA} by ${AUTHOR}: ${COMMIT_MSG}\nBranch: ${BRANCH}\nRepo: ${REPO}"
 
