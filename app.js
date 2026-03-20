@@ -1,7 +1,7 @@
 /**
  * Zero-dependency TODO app.
  * Data model intentionally simple and resilient to schema changes.
- * XPRMNTS-13: test change
+ * @version 2.0
  */
 
 const STORAGE_KEY = "todo-app:v2";
