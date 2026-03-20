@@ -267,6 +267,21 @@ function clearCompleted() {
   upsert(todos.filter((t) => !t.completed));
 }
 
+function exportAsCSV() {
+  const header = "id,title,completed,priority,dueDate,createdAt,updatedAt";
+  const rows = todos.map((t) =>
+    `"${t.id}","${t.title}",${t.completed},"${t.priority}","${t.dueDate || ""}",${t.createdAt},${t.updatedAt}`
+  );
+  const csv = [header, ...rows].join("\n");
+  const blob = new Blob([csv], { type: "text/csv" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "todos.csv";
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
 // Events
 createForm.addEventListener("submit", (e) => {
   e.preventDefault();
