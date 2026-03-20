@@ -56,8 +56,6 @@ jobs:
           SHA="${{ github.sha }}"
           SHORT_SHA="${SHA:0:7}"
 
-          # TODO: Replace 61 with your actual "Prod" transition ID
-          # To find it: curl -u email:token https://cobay.atlassian.net/rest/api/3/issue/XPRMNTS-4/transitions
           PROD_TRANSITION_ID="51"
 
           for KEY in ${{ steps.issues.outputs.keys }}; do
