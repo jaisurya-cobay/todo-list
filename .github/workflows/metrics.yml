@@ -16,7 +16,7 @@ jobs:
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
-      JIRA_USER_EMAIL: ${{ secrets.JIRA_USER_EMAIL }}
+      JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
       JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
     steps:
       - uses: actions/checkout@v4
@@ -89,21 +89,21 @@ jobs:
           echo "" >> metrics_report.md
 
           # Open bugs
-          OPEN_BUGS=$(curl -s -u "${JIRA_USER_EMAIL}:${JIRA_API_TOKEN}" \
+          OPEN_BUGS=$(curl -s -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
             -H "Content-Type: application/json" \
             "${JIRA_BASE_URL}/rest/api/3/search?jql=project%3DXPRMNTS%20AND%20issuetype%3DBug%20AND%20statusCategory%20!%3D%20Done&fields=summary,status,priority" \
             | jq '.total // 0')
           echo "- **Open Bugs:** ${OPEN_BUGS}" >> metrics_report.md
 
           # Bugs resolved this week
-          RESOLVED_BUGS=$(curl -s -u "${JIRA_USER_EMAIL}:${JIRA_API_TOKEN}" \
+          RESOLVED_BUGS=$(curl -s -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
             -H "Content-Type: application/json" \
             "${JIRA_BASE_URL}/rest/api/3/search?jql=project%3DXPRMNTS%20AND%20issuetype%3DBug%20AND%20status%3DDone%20AND%20resolved%20>%3D%20-7d&fields=summary" \
             | jq '.total // 0')
           echo "- **Bugs Resolved (7d):** ${RESOLVED_BUGS}" >> metrics_report.md
 
           # Bugs created this week
-          CREATED_BUGS=$(curl -s -u "${JIRA_USER_EMAIL}:${JIRA_API_TOKEN}" \
+          CREATED_BUGS=$(curl -s -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
             -H "Content-Type: application/json" \
             "${JIRA_BASE_URL}/rest/api/3/search?jql=project%3DXPRMNTS%20AND%20issuetype%3DBug%20AND%20created%20>%3D%20-7d&fields=summary" \
             | jq '.total // 0')

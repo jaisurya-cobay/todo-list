@@ -15,7 +15,7 @@ jobs:
       - name: Extract Jira issue key and comment
         env:
           JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
-          JIRA_USER_EMAIL: ${{ secrets.JIRA_USER_EMAIL }}
+          JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
           JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
         run: |
           BRANCH="${GITHUB_REF_NAME}"
@@ -41,7 +41,7 @@ jobs:
           echo "Found issue key: ${ISSUE_KEY}"
 
           # Transition to In Progress (idempotent - Jira ignores if already in that state)
-          curl -s -u "${JIRA_USER_EMAIL}:${JIRA_API_TOKEN}" \
+          curl -s -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
             -H "Content-Type: application/json" \
             -X POST \
             "${JIRA_BASE_URL}/rest/api/3/issue/${ISSUE_KEY}/transitions" \
@@ -50,7 +50,7 @@ jobs:
           # Add commit as comment
           COMMENT_TEXT="Commit ${SHORT_SHA} by ${AUTHOR}: ${COMMIT_MSG}\nBranch: ${BRANCH}\nRepo: ${REPO}"
 
-          curl -s -u "${JIRA_USER_EMAIL}:${JIRA_API_TOKEN}" \
+          curl -s -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
             -H "Content-Type: application/json" \
             -X POST \
             "${JIRA_BASE_URL}/rest/api/3/issue/${ISSUE_KEY}/comment" \

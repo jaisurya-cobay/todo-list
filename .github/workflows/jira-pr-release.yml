@@ -41,7 +41,7 @@ jobs:
         if: steps.issues.outputs.found == 'true'
         env:
           JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
-          JIRA_USER_EMAIL: ${{ secrets.JIRA_USER_EMAIL }}
+          JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
           JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
         run: |
           PR_NUM="${{ github.event.pull_request.number }}"
@@ -53,14 +53,14 @@ jobs:
             echo "Processing ${KEY}..."
 
             # Transition to Done
-            curl -s -u "${JIRA_USER_EMAIL}:${JIRA_API_TOKEN}" \
+            curl -s -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
               -H "Content-Type: application/json" \
               -X POST \
               "${JIRA_BASE_URL}/rest/api/3/issue/${KEY}/transitions" \
               -d '{"transition":{"id":"31"}}'
 
             # Add merge comment
-            curl -s -u "${JIRA_USER_EMAIL}:${JIRA_API_TOKEN}" \
+            curl -s -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
               -H "Content-Type: application/json" \
               -X POST \
               "${JIRA_BASE_URL}/rest/api/3/issue/${KEY}/comment" \
