@@ -52,6 +52,18 @@ jobs:
           echo "- **Issue:** ${{ inputs.issue_key }}" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Branch:** \`${BRANCH}\`" >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Transition Jira to In Progress
+        env:
+          JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
+          JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
+          JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+        run: |
+          curl -s -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
+            -H "Content-Type: application/json" \
+            -X POST \
+            "${JIRA_BASE_URL}/rest/api/3/issue/${{ inputs.issue_key }}/transitions" \
+            -d '{"transition":{"id":"21"}}'
+
       - name: Add comment to Jira
         env:
           JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
