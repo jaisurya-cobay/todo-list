@@ -1,32 +1,124 @@
-name: Deploy Pipeline
+name: Deploy to Production
 
 on:
   push:
     branches:
       - main
 
+permissions:
+  contents: write
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: Build (example)
+      - name: Build
         run: echo "Building..."
 
-      - name: Deploy (example)
-        run: echo "Deploying..."
+      - name: Deploy
+        run: echo "Deploying to production..."
 
-      - name: Update Jira after deployment
+      - name: Extract Jira issue keys from commits
+        id: issues
         run: |
-          ISSUE=$(git log -1 --pretty=%B | grep -oE '[A-Z]+-[0-9]+')
-
-          if [ -n "$ISSUE" ]; then
-            curl -X POST \
-            -u ${{ secrets.JIRA_EMAIL }}:${{ secrets.JIRA_API_TOKEN }} \
-            -H "Content-Type: application/json" \
-            --data "{\"body\":\"🚀 Deployed to production\"}" \
-            ${{ secrets.JIRA_BASE_URL }}/rest/api/3/issue/$ISSUE/comment
+          # Get all commits since last tag (or all commits if no tag)
+          LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          if [ -n "$LAST_TAG" ]; then
+            COMMITS=$(git log "${LAST_TAG}..HEAD" --pretty=format:'%s %b')
+          else
+            COMMITS=$(git log -10 --pretty=format:'%s %b')
           fi
+
+          KEYS=$(echo "$COMMITS" | grep -oE '[A-Z]+-[0-9]+' | sort -u | tr '\n' ' ')
+
+          if [ -z "$KEYS" ]; then
+            echo "No Jira issue keys found."
+            echo "found=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Found issue keys: ${KEYS}"
+            echo "keys=${KEYS}" >> "$GITHUB_OUTPUT"
+            echo "found=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Transition issues to Prod
+        if: steps.issues.outputs.found == 'true'
+        env:
+          JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
+          JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
+          JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+        run: |
+          REPO="${{ github.repository }}"
+          SHA="${{ github.sha }}"
+          SHORT_SHA="${SHA:0:7}"
+
+          # TODO: Replace 61 with your actual "Prod" transition ID
+          # To find it: curl -u email:token https://cobay.atlassian.net/rest/api/3/issue/XPRMNTS-4/transitions
+          PROD_TRANSITION_ID="51"
+
+          for KEY in ${{ steps.issues.outputs.keys }}; do
+            echo "Processing ${KEY}..."
+
+            # Transition to Prod
+            curl -s -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
+              -H "Content-Type: application/json" \
+              -X POST \
+              "${JIRA_BASE_URL}/rest/api/3/issue/${KEY}/transitions" \
+              -d "{\"transition\":{\"id\":\"${PROD_TRANSITION_ID}\"}}"
+
+            # Add deployment comment
+            curl -s -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
+              -H "Content-Type: application/json" \
+              -X POST \
+              "${JIRA_BASE_URL}/rest/api/3/issue/${KEY}/comment" \
+              -d "{\"body\":{\"type\":\"doc\",\"version\":1,\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"Deployed to production (${SHORT_SHA})\"},{\"type\":\"hardBreak\"},{\"type\":\"text\",\"text\":\"Repo: ${REPO}\"}]}]}}"
+
+            echo "  -> ${KEY} transitioned to Prod"
+          done
+
+          echo "### Jira Issues in Production" >> "$GITHUB_STEP_SUMMARY"
+          echo "Issues: ${{ steps.issues.outputs.keys }}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
+        run: |
+          DATE=$(date +%Y-%m-%d)
+          TAG="release-${DATE}-${{ github.run_number }}"
+          KEYS="${{ steps.issues.outputs.keys }}"
+
+          NOTES="## What's Changed\n\n"
+
+          # List commits since last tag
+          LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          if [ -n "$LAST_TAG" ]; then
+            git log "${LAST_TAG}..HEAD" --pretty=format:'- %s' >> /tmp/commits.txt
+          else
+            git log -10 --pretty=format:'- %s' >> /tmp/commits.txt
+          fi
+          NOTES+="$(cat /tmp/commits.txt)\n\n"
+
+          if [ -n "$KEYS" ]; then
+            NOTES+="## Jira Issues\n\n"
+            for KEY in $KEYS; do
+              NOTES+="- [${KEY}](${JIRA_BASE_URL:-https://cobay.atlassian.net}/browse/${KEY})\n"
+            done
+          fi
+
+          NOTES+="\n**Deployed:** ${DATE}"
+
+          git tag "$TAG"
+          git push origin "$TAG"
+
+          gh release create "$TAG" \
+            --title "Release ${DATE} (#${{ github.run_number }})" \
+            --notes "$(echo -e "$NOTES")" \
+            --latest
+
+          echo "### Release Created" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Tag:** ${TAG}" >> "$GITHUB_STEP_SUMMARY"
