@@ -3,7 +3,7 @@
  * Data model intentionally simple and resilient to schema changes.
  */
 
-const STORAGE_KEY = "todo-app:v1";
+const STORAGE_KEY = "todo-app:v2";
 
 /**
  * @typedef {Object} Todo
