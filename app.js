@@ -101,6 +101,7 @@ const listEl = el("list");
 const countEl = el("count");
 const toggleAllBtn = el("toggle-all");
 const clearCompletedBtn = el("clear-completed");
+const taskCountBadge = el("task-count-badge");
 const template = /** @type {HTMLTemplateElement} */ (el("todo-item-template"));
 
 /** @type {Filter} */
@@ -124,6 +125,8 @@ function updateMeta() {
   const completed = total - active;
   const itemLabel = active === 1 ? "item" : "items";
   countEl.textContent = `${active} ${itemLabel} left · ${completed} completed`;
+
+  taskCountBadge.textContent = String(total);
 
   toggleAllBtn.disabled = total === 0;
   clearCompletedBtn.disabled = completed === 0;
