@@ -293,11 +293,21 @@ function exportAsCSV() {
   URL.revokeObjectURL(url);
 }
 
+// Character count
+const charCountEl = el("char-count");
+newTodoInput.addEventListener("input", () => {
+  const len = newTodoInput.value.length;
+  charCountEl.textContent = `${len} / 200`;
+  charCountEl.style.color = len > 180 ? "var(--destructive-foreground)" : "";
+});
+
 // Events
 createForm.addEventListener("submit", (e) => {
   e.preventDefault();
   addTodo(newTodoInput.value);
   newTodoInput.value = "";
+  charCountEl.textContent = "0 / 200";
+  charCountEl.style.color = "";
   newTodoInput.focus();
 });
 

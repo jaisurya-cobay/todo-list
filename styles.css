@@ -494,3 +494,9 @@ input[type="text"]:focus {
   font-size: 0.75rem;
   color: var(--muted-foreground);
 }
+
+.char-count {
+  font-size: 0.75rem;
+  color: var(--muted-foreground);
+  white-space: nowrap;
+}
