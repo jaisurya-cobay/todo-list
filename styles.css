@@ -472,3 +472,18 @@ input[type="text"]:focus {
     flex: 1;
   }
 }
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.5em;
+  font-weight: 600;
+  min-width: 1.6em;
+  padding: 0.15em 0.45em;
+  border-radius: 9999px;
+  background: var(--primary);
+  color: var(--primary-foreground);
+  vertical-align: middle;
+  margin-left: 0.3em;
+}
