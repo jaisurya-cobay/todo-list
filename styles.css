@@ -487,3 +487,10 @@ input[type="text"]:focus {
   vertical-align: middle;
   margin-left: 0.3em;
 }
+
+.last-updated {
+  display: block;
+  margin-top: 0.25rem;
+  font-size: 0.75rem;
+  color: var(--muted-foreground);
+}
