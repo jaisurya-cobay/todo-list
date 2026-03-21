@@ -311,6 +311,7 @@ document.addEventListener("click", (e) => {
 
 toggleAllBtn.addEventListener("click", toggleAll);
 clearCompletedBtn.addEventListener("click", clearCompleted);
+el("export-csv").addEventListener("click", exportAsCSV);
 
 // Keyboard shortcut: press "/" to focus the input
 document.addEventListener("keydown", (e) => {
