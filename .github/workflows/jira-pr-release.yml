@@ -16,11 +16,11 @@ jobs:
 
       - name: Extract Jira issue keys from PR
         id: issues
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          BRANCH: ${{ github.event.pull_request.head.ref }}
         run: |
-          PR_TITLE="${{ github.event.pull_request.title }}"
-          PR_BODY="${{ github.event.pull_request.body }}"
-          BRANCH="${{ github.event.pull_request.head.ref }}"
-
           ALL_TEXT="${PR_TITLE} ${PR_BODY} ${BRANCH}"
           KEYS=$(echo "$ALL_TEXT" | grep -oE '[A-Z]+-[0-9]+' | sort -u | tr '\n' ' ')
 
@@ -39,11 +39,11 @@ jobs:
           JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
           JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
           JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+          PR_NUM: ${{ github.event.pull_request.number }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          REPO: ${{ github.repository }}
+          MERGED_BY: ${{ github.event.pull_request.merged_by.login }}
         run: |
-          PR_NUM="${{ github.event.pull_request.number }}"
-          PR_TITLE="${{ github.event.pull_request.title }}"
-          REPO="${{ github.repository }}"
-          MERGED_BY="${{ github.event.pull_request.merged_by.login }}"
 
           QA_TRANSITION_ID="41"
 
