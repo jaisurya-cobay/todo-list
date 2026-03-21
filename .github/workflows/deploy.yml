@@ -81,7 +81,64 @@ jobs:
           echo "### Jira Issues in Production" >> "$GITHUB_STEP_SUMMARY"
           echo "Issues: ${{ steps.issues.outputs.keys }}" >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Create release
+      - name: Create Jira Release
+        if: steps.issues.outputs.found == 'true'
+        id: jira_release
+        env:
+          JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
+          JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
+          JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+        run: |
+          DATE=$(date +%Y-%m-%d)
+          VERSION_NAME="release-${DATE}-${{ github.run_number }}"
+          PROJECT_ID="10208"
+
+          # Create Jira version
+          VERSION_RESPONSE=$(curl -s -w "\n%{http_code}" \
+            -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
+            -H "Content-Type: application/json" \
+            -X POST \
+            "${JIRA_BASE_URL}/rest/api/3/version" \
+            -d "{
+              \"name\": \"${VERSION_NAME}\",
+              \"projectId\": ${PROJECT_ID},
+              \"released\": true,
+              \"releaseDate\": \"${DATE}\",
+              \"description\": \"Automated release from GitHub Actions run #${{ github.run_number }}\"
+            }")
+
+          HTTP_CODE=$(echo "$VERSION_RESPONSE" | tail -1)
+          BODY=$(echo "$VERSION_RESPONSE" | sed '$d')
+          VERSION_ID=$(echo "$BODY" | jq -r '.id // empty')
+
+          if [ -n "$VERSION_ID" ]; then
+            echo "Created Jira version: ${VERSION_NAME} (ID: ${VERSION_ID})"
+            echo "version_id=${VERSION_ID}" >> "$GITHUB_OUTPUT"
+            echo "version_name=${VERSION_NAME}" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::Failed to create Jira version (HTTP ${HTTP_CODE}): ${BODY}"
+          fi
+
+      - name: Link issues to Jira Release
+        if: steps.jira_release.outputs.version_id != ''
+        env:
+          JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
+          JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
+          JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+        run: |
+          VERSION_NAME="${{ steps.jira_release.outputs.version_name }}"
+
+          for KEY in ${{ steps.issues.outputs.keys }}; do
+            curl -s -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
+              -H "Content-Type: application/json" \
+              -X PUT \
+              "${JIRA_BASE_URL}/rest/api/3/issue/${KEY}" \
+              -d "{\"update\":{\"fixVersions\":[{\"add\":{\"name\":\"${VERSION_NAME}\"}}]}}"
+
+            echo "  -> ${KEY} linked to ${VERSION_NAME}"
+          done
+
+      - name: Create GitHub release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
