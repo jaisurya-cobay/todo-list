@@ -304,5 +304,13 @@ document.addEventListener("click", (e) => {
 toggleAllBtn.addEventListener("click", toggleAll);
 clearCompletedBtn.addEventListener("click", clearCompleted);
 
+// Keyboard shortcut: press "/" to focus the input
+document.addEventListener("keydown", (e) => {
+  if (e.key === "/" && document.activeElement !== newTodoInput) {
+    e.preventDefault();
+    newTodoInput.focus();
+  }
+});
+
 // Initial render
 render();
