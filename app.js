@@ -102,6 +102,7 @@ const countEl = el("count");
 const toggleAllBtn = el("toggle-all");
 const clearCompletedBtn = el("clear-completed");
 const taskCountBadge = el("task-count-badge");
+const lastUpdatedEl = el("last-updated");
 const template = /** @type {HTMLTemplateElement} */ (el("todo-item-template"));
 
 /** @type {Filter} */
@@ -127,6 +128,13 @@ function updateMeta() {
   countEl.textContent = `${active} ${itemLabel} left · ${completed} completed`;
 
   taskCountBadge.textContent = String(total);
+
+  if (todos.length > 0) {
+    const latest = new Date(Math.max(...todos.map((t) => t.updatedAt)));
+    lastUpdatedEl.textContent = `Last updated: ${latest.toLocaleString()}`;
+  } else {
+    lastUpdatedEl.textContent = "";
+  }
 
   toggleAllBtn.disabled = total === 0;
   clearCompletedBtn.disabled = completed === 0;
