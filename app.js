@@ -245,10 +245,13 @@ function addTodo(title) {
     dueDate: null,
   };
   upsert([todo, ...todos]);
+  showToast(`Task added: "${clean}"`, "success");
 }
 
 function removeTodo(id) {
+  const todo = todos.find((t) => t.id === id);
   upsert(todos.filter((t) => t.id !== id));
+  if (todo) showToast(`Task deleted: "${todo.title}"`, "warning");
 }
 
 function setCompleted(id, completed) {
@@ -272,10 +275,13 @@ function toggleAll() {
   const allCompleted = todos.every((t) => t.completed);
   const now = Date.now();
   upsert(todos.map((t) => ({ ...t, completed: !allCompleted, updatedAt: now })));
+  showToast(allCompleted ? "All tasks marked active" : "All tasks completed", "success");
 }
 
 function clearCompleted() {
+  const count = todos.filter((t) => t.completed).length;
   upsert(todos.filter((t) => !t.completed));
+  if (count > 0) showToast(`Cleared ${count} completed task${count > 1 ? "s" : ""}`, "info");
 }
 
 function exportAsCSV() {
@@ -330,6 +336,21 @@ document.addEventListener("keydown", (e) => {
     newTodoInput.focus();
   }
 });
+
+// Toast notification system
+const toastContainer = el("toast-container");
+
+function showToast(message, type = "info", duration = 2500) {
+  const toast = document.createElement("div");
+  toast.className = `toast toast-${type}`;
+  toast.textContent = message;
+  toastContainer.appendChild(toast);
+
+  setTimeout(() => {
+    toast.classList.add("toast-out");
+    toast.addEventListener("animationend", () => toast.remove());
+  }, duration);
+}
 
 // Initial render
 render();
