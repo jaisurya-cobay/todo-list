@@ -178,50 +178,87 @@ jobs:
           echo "### Release Created" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Tag:** ${TAG}" >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Notify Slack - Release
-        if: steps.jira_release.outputs.version_name != ''
+      - name: Notify Slack releases-test channel
+        if: always()
         env:
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_RELEASE_WEBHOOK_URL }}
+          SLACK_WEBHOOK_URL: ${{ secrets.RELEASE_SLACK_WEBHOOK_URL }}
           JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
         run: |
-          VERSION_NAME="${{ steps.jira_release.outputs.version_name }}"
+          DATE=$(date +%Y-%m-%d)
+          TAG="release-${DATE}-${{ github.run_number }}"
+          SHORT_SHA="${{ github.sha }}"
+          SHORT_SHA="${SHORT_SHA:0:7}"
+          IST_TIME=$(TZ='Asia/Kolkata' date "+%b %d, %Y %I:%M %p IST")
+          UTC_TIME=$(date -u "+%b %d, %Y %I:%M %p UTC")
           KEYS="${{ steps.issues.outputs.keys }}"
-          REPO="${{ github.repository }}"
-          SHA="${{ github.sha }}"
-          SHORT_SHA="${SHA:0:7}"
-          RUN_URL="https://github.com/${REPO}/actions/runs/${{ github.run_id }}"
+          STATUS="${{ job.status }}"
+          RUN_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
 
-          # Build Jira issue links
-          ISSUE_LINKS=""
-          for KEY in $KEYS; do
-            ISSUE_LINKS+="• <${JIRA_BASE_URL:-https://cobay.atlassian.net}/browse/${KEY}|${KEY}>\n"
-          done
+          if [ "$STATUS" = "success" ]; then
+            HEADER="🚀  Release Deployed to Production"
+            STATUS_TEXT="SUCCESS"
+            URGENCY="✅  *Deployment completed successfully!*"
+          else
+            HEADER="⚠️  Release Deployment Failed"
+            STATUS_TEXT="FAILED"
+            URGENCY="🔴  *Deployment encountered errors. Check GitHub Actions.*"
+          fi
 
-          curl -s -X POST "$SLACK_WEBHOOK_URL" \
-            -H "Content-Type: application/json" \
+          # Build Jira links
+          JIRA_LINKS=""
+          if [ -n "$KEYS" ]; then
+            for KEY in $KEYS; do
+              JIRA_LINKS+="<${JIRA_BASE_URL:-https://cobay.atlassian.net}/browse/${KEY}|${KEY}> "
+            done
+          else
+            JIRA_LINKS="None"
+          fi
+
+          curl -s -X POST -H "Content-Type: application/json" \
             -d "{
               \"blocks\": [
                 {
                   \"type\": \"header\",
-                  \"text\": {\"type\": \"plain_text\", \"text\": \"🚀 New Release: ${VERSION_NAME}\", \"emoji\": true}
+                  \"text\": {
+                    \"type\": \"plain_text\",
+                    \"text\": \"${HEADER}\"
+                  }
                 },
+                {
+                  \"type\": \"section\",
+                  \"text\": {
+                    \"type\": \"mrkdwn\",
+                    \"text\": \"${URGENCY}\"
+                  }
+                },
+                {\"type\": \"divider\"},
                 {
                   \"type\": \"section\",
                   \"fields\": [
-                    {\"type\": \"mrkdwn\", \"text\": \"*Repo:*\n<https://github.com/${REPO}|${REPO}>\"},
-                    {\"type\": \"mrkdwn\", \"text\": \"*Commit:*\n\`${SHORT_SHA}\`\"}
+                    {\"type\": \"mrkdwn\", \"text\": \"*📦 Repository:*\n<https://github.com/${{ github.repository }}|${{ github.repository }}>\"},
+                    {\"type\": \"mrkdwn\", \"text\": \"*🏷️ Tag:*\n\`${TAG}\`\"},
+                    {\"type\": \"mrkdwn\", \"text\": \"*🔀 Commit:*\n\`${SHORT_SHA}\`\"},
+                    {\"type\": \"mrkdwn\", \"text\": \"*👤 Triggered by:*\n${{ github.actor }}\"},
+                    {\"type\": \"mrkdwn\", \"text\": \"*🔔 Status:*\n\`${STATUS_TEXT}\`\"},
+                    {\"type\": \"mrkdwn\", \"text\": \"*🎫 Jira Issues:*\n${JIRA_LINKS}\"}
                   ]
                 },
+                {\"type\": \"divider\"},
                 {
-                  \"type\": \"section\",
-                  \"text\": {\"type\": \"mrkdwn\", \"text\": \"*Jira Issues:*\n${ISSUE_LINKS}\"}
+                  \"type\": \"context\",
+                  \"elements\": [
+                    {
+                      \"type\": \"mrkdwn\",
+                      \"text\": \"⏰ *${IST_TIME}*  |  🌐 *${UTC_TIME}*  |  🔢 *Run #${{ github.run_number }}*\"
+                    }
+                  ]
                 },
                 {
                   \"type\": \"actions\",
                   \"elements\": [
                     {\"type\": \"button\", \"text\": {\"type\": \"plain_text\", \"text\": \"View Run\"}, \"url\": \"${RUN_URL}\"},
-                    {\"type\": \"button\", \"text\": {\"type\": \"plain_text\", \"text\": \"GitHub Release\"}, \"url\": \"https://github.com/${REPO}/releases/tag/${VERSION_NAME}\"}
+                    {\"type\": \"button\", \"text\": {\"type\": \"plain_text\", \"text\": \"GitHub Release\"}, \"url\": \"https://github.com/${{ github.repository }}/releases/tag/${TAG}\"}
                   ]
                 }
               ]
-            }"
+            }" "$SLACK_WEBHOOK_URL"
