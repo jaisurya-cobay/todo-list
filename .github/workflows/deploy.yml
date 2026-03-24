@@ -192,16 +192,13 @@ jobs:
           UTC_TIME=$(date -u "+%b %d, %Y %I:%M %p UTC")
           KEYS="${{ steps.issues.outputs.keys }}"
           STATUS="${{ job.status }}"
+          RUN_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
 
           if [ "$STATUS" = "success" ]; then
-            ICON="✅"
-            COLOR="#2ECC71"
             HEADER="🚀  Release Deployed to Production"
             STATUS_TEXT="SUCCESS"
             URGENCY="✅  *Deployment completed successfully!*"
           else
-            ICON="❌"
-            COLOR="#E74C3C"
             HEADER="⚠️  Release Deployment Failed"
             STATUS_TEXT="FAILED"
             URGENCY="🔴  *Deployment encountered errors. Check GitHub Actions.*"
@@ -254,6 +251,13 @@ jobs:
                       \"type\": \"mrkdwn\",
                       \"text\": \"⏰ *${IST_TIME}*  |  🌐 *${UTC_TIME}*  |  🔢 *Run #${{ github.run_number }}*\"
                     }
+                  ]
+                },
+                {
+                  \"type\": \"actions\",
+                  \"elements\": [
+                    {\"type\": \"button\", \"text\": {\"type\": \"plain_text\", \"text\": \"View Run\"}, \"url\": \"${RUN_URL}\"},
+                    {\"type\": \"button\", \"text\": {\"type\": \"plain_text\", \"text\": \"GitHub Release\"}, \"url\": \"https://github.com/${{ github.repository }}/releases/tag/${TAG}\"}
                   ]
                 }
               ]
