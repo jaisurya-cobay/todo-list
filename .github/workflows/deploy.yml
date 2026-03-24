@@ -177,3 +177,51 @@ jobs:
 
           echo "### Release Created" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Tag:** ${TAG}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Notify Slack - Release
+        if: steps.jira_release.outputs.version_name != ''
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_RELEASE_WEBHOOK_URL }}
+          JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
+        run: |
+          VERSION_NAME="${{ steps.jira_release.outputs.version_name }}"
+          KEYS="${{ steps.issues.outputs.keys }}"
+          REPO="${{ github.repository }}"
+          SHA="${{ github.sha }}"
+          SHORT_SHA="${SHA:0:7}"
+          RUN_URL="https://github.com/${REPO}/actions/runs/${{ github.run_id }}"
+
+          # Build Jira issue links
+          ISSUE_LINKS=""
+          for KEY in $KEYS; do
+            ISSUE_LINKS+="• <${JIRA_BASE_URL:-https://cobay.atlassian.net}/browse/${KEY}|${KEY}>\n"
+          done
+
+          curl -s -X POST "$SLACK_WEBHOOK_URL" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"blocks\": [
+                {
+                  \"type\": \"header\",
+                  \"text\": {\"type\": \"plain_text\", \"text\": \"🚀 New Release: ${VERSION_NAME}\", \"emoji\": true}
+                },
+                {
+                  \"type\": \"section\",
+                  \"fields\": [
+                    {\"type\": \"mrkdwn\", \"text\": \"*Repo:*\n<https://github.com/${REPO}|${REPO}>\"},
+                    {\"type\": \"mrkdwn\", \"text\": \"*Commit:*\n\`${SHORT_SHA}\`\"}
+                  ]
+                },
+                {
+                  \"type\": \"section\",
+                  \"text\": {\"type\": \"mrkdwn\", \"text\": \"*Jira Issues:*\n${ISSUE_LINKS}\"}
+                },
+                {
+                  \"type\": \"actions\",
+                  \"elements\": [
+                    {\"type\": \"button\", \"text\": {\"type\": \"plain_text\", \"text\": \"View Run\"}, \"url\": \"${RUN_URL}\"},
+                    {\"type\": \"button\", \"text\": {\"type\": \"plain_text\", \"text\": \"GitHub Release\"}, \"url\": \"https://github.com/${REPO}/releases/tag/${VERSION_NAME}\"}
+                  ]
+                }
+              ]
+            }"
