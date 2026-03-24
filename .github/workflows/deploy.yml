@@ -177,3 +177,84 @@ jobs:
 
           echo "### Release Created" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Tag:** ${TAG}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Notify Slack releases-test channel
+        if: always()
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.RELEASE_SLACK_WEBHOOK_URL }}
+          JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
+        run: |
+          DATE=$(date +%Y-%m-%d)
+          TAG="release-${DATE}-${{ github.run_number }}"
+          SHORT_SHA="${{ github.sha }}"
+          SHORT_SHA="${SHORT_SHA:0:7}"
+          IST_TIME=$(TZ='Asia/Kolkata' date "+%b %d, %Y %I:%M %p IST")
+          UTC_TIME=$(date -u "+%b %d, %Y %I:%M %p UTC")
+          KEYS="${{ steps.issues.outputs.keys }}"
+          STATUS="${{ job.status }}"
+
+          if [ "$STATUS" = "success" ]; then
+            ICON="✅"
+            COLOR="#2ECC71"
+            HEADER="🚀  Release Deployed to Production"
+            STATUS_TEXT="SUCCESS"
+            URGENCY="✅  *Deployment completed successfully!*"
+          else
+            ICON="❌"
+            COLOR="#E74C3C"
+            HEADER="⚠️  Release Deployment Failed"
+            STATUS_TEXT="FAILED"
+            URGENCY="🔴  *Deployment encountered errors. Check GitHub Actions.*"
+          fi
+
+          # Build Jira links
+          JIRA_LINKS=""
+          if [ -n "$KEYS" ]; then
+            for KEY in $KEYS; do
+              JIRA_LINKS+="<${JIRA_BASE_URL:-https://cobay.atlassian.net}/browse/${KEY}|${KEY}> "
+            done
+          else
+            JIRA_LINKS="None"
+          fi
+
+          curl -s -X POST -H "Content-Type: application/json" \
+            -d "{
+              \"blocks\": [
+                {
+                  \"type\": \"header\",
+                  \"text\": {
+                    \"type\": \"plain_text\",
+                    \"text\": \"${HEADER}\"
+                  }
+                },
+                {
+                  \"type\": \"section\",
+                  \"text\": {
+                    \"type\": \"mrkdwn\",
+                    \"text\": \"${URGENCY}\"
+                  }
+                },
+                {\"type\": \"divider\"},
+                {
+                  \"type\": \"section\",
+                  \"fields\": [
+                    {\"type\": \"mrkdwn\", \"text\": \"*📦 Repository:*\n<https://github.com/${{ github.repository }}|${{ github.repository }}>\"},
+                    {\"type\": \"mrkdwn\", \"text\": \"*🏷️ Tag:*\n\`${TAG}\`\"},
+                    {\"type\": \"mrkdwn\", \"text\": \"*🔀 Commit:*\n\`${SHORT_SHA}\`\"},
+                    {\"type\": \"mrkdwn\", \"text\": \"*👤 Triggered by:*\n${{ github.actor }}\"},
+                    {\"type\": \"mrkdwn\", \"text\": \"*🔔 Status:*\n\`${STATUS_TEXT}\`\"},
+                    {\"type\": \"mrkdwn\", \"text\": \"*🎫 Jira Issues:*\n${JIRA_LINKS}\"}
+                  ]
+                },
+                {\"type\": \"divider\"},
+                {
+                  \"type\": \"context\",
+                  \"elements\": [
+                    {
+                      \"type\": \"mrkdwn\",
+                      \"text\": \"⏰ *${IST_TIME}*  |  🌐 *${UTC_TIME}*  |  🔢 *Run #${{ github.run_number }}*\"
+                    }
+                  ]
+                }
+              ]
+            }" "$SLACK_WEBHOOK_URL"
