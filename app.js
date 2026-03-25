@@ -349,7 +349,10 @@ document.addEventListener("keydown", (e) => {
 // Toast notification system
 const toastContainer = el("toast-container");
 
+let toastsEnabled = localStorage.getItem("todo-app:toasts") !== "off";
+
 function showToast(message, type = "info", duration = 2500) {
+  if (!toastsEnabled) return;
   const toast = document.createElement("div");
   toast.className = `toast toast-${type}`;
   toast.textContent = message;
@@ -384,6 +387,16 @@ sortToggleBtn.addEventListener("click", () => {
   localStorage.setItem("todo-app:sort", sortOrder);
   sortToggleBtn.textContent = sortOrder === "newest" ? "Newest first" : "Oldest first";
   upsert([...todos]);
+});
+
+// Toast notification preference toggle
+const toastToggleBtn = el("toast-toggle");
+toastToggleBtn.textContent = toastsEnabled ? "Notifications: ON" : "Notifications: OFF";
+
+toastToggleBtn.addEventListener("click", () => {
+  toastsEnabled = !toastsEnabled;
+  localStorage.setItem("todo-app:toasts", toastsEnabled ? "on" : "off");
+  toastToggleBtn.textContent = toastsEnabled ? "Notifications: ON" : "Notifications: OFF";
 });
 
 // Keyboard shortcuts panel toggle
