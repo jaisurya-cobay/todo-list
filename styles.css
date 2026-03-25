@@ -69,6 +69,24 @@ body {
   color: var(--muted-foreground);
 }
 
+.task-counters {
+  display: flex;
+  gap: 16px;
+  margin-top: 8px;
+}
+
+.counter {
+  font-size: 12px;
+  color: var(--muted-foreground);
+  padding: 4px 10px;
+  background: var(--secondary);
+  border-radius: var(--radius);
+}
+
+.counter strong {
+  color: var(--foreground);
+}
+
 /* ── Card ── */
 
 .card {
