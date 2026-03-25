@@ -143,17 +143,30 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          LAST_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
 
           if [ -n "$LAST_TAG" ]; then
-            SINCE_DATE=$(git log -1 --format=%aI "$LAST_TAG")
+            # Convert tag date to UTC ISO format for comparison with gh mergedAt
+            SINCE_DATE=$(TZ=UTC git log -1 --format=%aI "$LAST_TAG" | sed 's/+00:00$/Z/')
           else
-            SINCE_DATE=$(git log --reverse --format=%aI | head -1)
+            SINCE_DATE="2000-01-01T00:00:00Z"
           fi
+          echo "Collecting PRs since: ${SINCE_DATE} (tag: ${LAST_TAG})"
 
-          # Get all merged PRs to main since last release
-          PR_JSON=$(gh pr list --base main --state merged --json number,title,author,mergedAt,headRefName \
-            --jq "[.[] | select(.mergedAt >= \"${SINCE_DATE}\")]")
+          # Get feature PRs merged to develop since last release (these are the actual work)
+          DEVELOP_PRS=$(gh pr list --base develop --state merged --limit 100 \
+            --json number,title,author,mergedAt,headRefName \
+            --jq "[.[] | select(.mergedAt > \"${SINCE_DATE}\")]")
+
+          # Also get feature PRs merged directly to main (not from develop)
+          MAIN_PRS=$(gh pr list --base main --state merged --limit 100 \
+            --json number,title,author,mergedAt,headRefName \
+            --jq "[.[] | select(.mergedAt > \"${SINCE_DATE}\" and .headRefName != \"develop\")]")
+
+          # Combine and deduplicate by PR number
+          PR_JSON=$(echo "${DEVELOP_PRS}${MAIN_PRS}" | jq -s 'add | unique_by(.number) | sort_by(.mergedAt)')
+
+          echo "Found $(echo "$PR_JSON" | jq 'length') PRs"
 
           # Build grouped notes by author
           AUTHORS=$(echo "$PR_JSON" | jq -r '.[].author.login' | sort -u)
