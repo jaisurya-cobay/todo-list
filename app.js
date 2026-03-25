@@ -71,8 +71,12 @@ function saveTodos(todos) {
   }
 }
 
+let sortOrder = localStorage.getItem("todo-app:sort") || "newest";
+
 function byUpdatedDesc(a, b) {
-  return b.updatedAt - a.updatedAt;
+  return sortOrder === "newest"
+    ? b.updatedAt - a.updatedAt
+    : a.updatedAt - b.updatedAt;
 }
 
 /**
@@ -356,6 +360,17 @@ function showToast(message, type = "info", duration = 2500) {
     toast.addEventListener("animationend", () => toast.remove());
   }, duration);
 }
+
+// Sort order toggle
+const sortToggleBtn = el("sort-toggle");
+sortToggleBtn.textContent = sortOrder === "newest" ? "Newest first" : "Oldest first";
+
+sortToggleBtn.addEventListener("click", () => {
+  sortOrder = sortOrder === "newest" ? "oldest" : "newest";
+  localStorage.setItem("todo-app:sort", sortOrder);
+  sortToggleBtn.textContent = sortOrder === "newest" ? "Newest first" : "Oldest first";
+  upsert([...todos]);
+});
 
 // Keyboard shortcuts panel toggle
 el("shortcuts-toggle").addEventListener("click", () => {
