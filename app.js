@@ -129,6 +129,11 @@ function updateMeta() {
 
   taskCountBadge.textContent = String(total);
 
+  // Update header task counters
+  el("counter-total").innerHTML = `Total: <strong>${total}</strong>`;
+  el("counter-active").innerHTML = `Active: <strong>${active}</strong>`;
+  el("counter-done").innerHTML = `Done: <strong>${completed}</strong>`;
+
   if (todos.length > 0) {
     const latest = new Date(Math.max(...todos.map((t) => t.updatedAt)));
     lastUpdatedEl.textContent = `Last updated: ${latest.toLocaleString()}`;
