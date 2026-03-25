@@ -129,6 +129,11 @@ function updateMeta() {
 
   taskCountBadge.textContent = String(total);
 
+  // Update header task counters
+  el("counter-total").innerHTML = `Total: <strong>${total}</strong>`;
+  el("counter-active").innerHTML = `Active: <strong>${active}</strong>`;
+  el("counter-done").innerHTML = `Done: <strong>${completed}</strong>`;
+
   if (todos.length > 0) {
     const latest = new Date(Math.max(...todos.map((t) => t.updatedAt)));
     lastUpdatedEl.textContent = `Last updated: ${latest.toLocaleString()}`;
@@ -351,6 +356,12 @@ function showToast(message, type = "info", duration = 2500) {
     toast.addEventListener("animationend", () => toast.remove());
   }, duration);
 }
+
+// Keyboard shortcuts panel toggle
+el("shortcuts-toggle").addEventListener("click", () => {
+  const panel = el("shortcuts-panel");
+  panel.hidden = !panel.hidden;
+});
 
 // Initial render
 render();
