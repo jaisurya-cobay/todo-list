@@ -138,6 +138,57 @@ jobs:
             echo "  -> ${KEY} linked to ${VERSION_NAME}"
           done
 
+      - name: Collect merged PRs since last release
+        id: prs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+
+          if [ -n "$LAST_TAG" ]; then
+            SINCE_DATE=$(git log -1 --format=%aI "$LAST_TAG")
+          else
+            SINCE_DATE=$(git log --reverse --format=%aI | head -1)
+          fi
+
+          # Get all merged PRs to main since last release
+          PR_JSON=$(gh pr list --base main --state merged --json number,title,author,mergedAt,headRefName \
+            --jq "[.[] | select(.mergedAt >= \"${SINCE_DATE}\")]")
+
+          # Build grouped notes by author
+          AUTHORS=$(echo "$PR_JSON" | jq -r '.[].author.login' | sort -u)
+
+          GROUPED_NOTES=""
+          PR_SUMMARY=""
+          for AUTHOR in $AUTHORS; do
+            GROUPED_NOTES+="### @${AUTHOR}\n"
+            while IFS='|' read -r NUM TITLE BRANCH; do
+              GROUPED_NOTES+="- #${NUM} ${TITLE}"
+              # Extract Jira key from branch name
+              JIRA_KEY=$(echo "$BRANCH" | grep -oE '[A-Z]+-[0-9]+' | head -1)
+              if [ -n "$JIRA_KEY" ]; then
+                GROUPED_NOTES+=" (${JIRA_KEY})"
+              fi
+              GROUPED_NOTES+="\n"
+              PR_SUMMARY+="• #${NUM} ${TITLE} (by ${AUTHOR})\n"
+            done < <(echo "$PR_JSON" | jq -r ".[] | select(.author.login == \"${AUTHOR}\") | \"\(.number)|\(.title)|\(.headRefName)\"")
+            GROUPED_NOTES+="\n"
+          done
+
+          # Save for later steps
+          echo "grouped_notes<<EOFNOTES" >> "$GITHUB_OUTPUT"
+          echo -e "$GROUPED_NOTES" >> "$GITHUB_OUTPUT"
+          echo "EOFNOTES" >> "$GITHUB_OUTPUT"
+
+          echo "pr_summary<<EOFSUMMARY" >> "$GITHUB_OUTPUT"
+          echo -e "$PR_SUMMARY" >> "$GITHUB_OUTPUT"
+          echo "EOFSUMMARY" >> "$GITHUB_OUTPUT"
+
+          PR_COUNT=$(echo "$PR_JSON" | jq 'length')
+          AUTHOR_COUNT=$(echo "$AUTHORS" | wc -w | tr -d ' ')
+          echo "pr_count=${PR_COUNT}" >> "$GITHUB_OUTPUT"
+          echo "author_count=${AUTHOR_COUNT}" >> "$GITHUB_OUTPUT"
+
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -147,19 +198,14 @@ jobs:
           TAG="release-${DATE}-${{ github.run_number }}"
           KEYS="${{ steps.issues.outputs.keys }}"
 
-          NOTES="## What's Changed\n\n"
+          NOTES="## 📦 Release Summary\n\n"
+          NOTES+="**PRs:** ${{ steps.prs.outputs.pr_count }} | **Contributors:** ${{ steps.prs.outputs.author_count }}\n\n"
 
-          # List commits since last tag
-          LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
-          if [ -n "$LAST_TAG" ]; then
-            git log "${LAST_TAG}..HEAD" --pretty=format:'- %s' >> /tmp/commits.txt
-          else
-            git log -10 --pretty=format:'- %s' >> /tmp/commits.txt
-          fi
-          NOTES+="$(cat /tmp/commits.txt)\n\n"
+          NOTES+="## 👥 Changes by Developer\n\n"
+          NOTES+="${{ steps.prs.outputs.grouped_notes }}\n"
 
           if [ -n "$KEYS" ]; then
-            NOTES+="## Jira Issues\n\n"
+            NOTES+="## 🎫 Jira Issues\n\n"
             for KEY in $KEYS; do
               NOTES+="- [${KEY}](${JIRA_BASE_URL:-https://cobay.atlassian.net}/browse/${KEY})\n"
             done
@@ -177,6 +223,7 @@ jobs:
 
           echo "### Release Created" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Tag:** ${TAG}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **PRs included:** ${{ steps.prs.outputs.pr_count }}" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Notify Slack releases-test channel
         if: always()
@@ -214,6 +261,14 @@ jobs:
             JIRA_LINKS="None"
           fi
 
+          # Build PR summary for Slack
+          PR_COUNT="${{ steps.prs.outputs.pr_count }}"
+          AUTHOR_COUNT="${{ steps.prs.outputs.author_count }}"
+          PR_SUMMARY="${{ steps.prs.outputs.pr_summary }}"
+          if [ -z "$PR_SUMMARY" ]; then
+            PR_SUMMARY="No PRs found"
+          fi
+
           curl -s -X POST -H "Content-Type: application/json" \
             -d "{
               \"blocks\": [
@@ -242,6 +297,14 @@ jobs:
                     {\"type\": \"mrkdwn\", \"text\": \"*🔔 Status:*\n\`${STATUS_TEXT}\`\"},
                     {\"type\": \"mrkdwn\", \"text\": \"*🎫 Jira Issues:*\n${JIRA_LINKS}\"}
                   ]
+                },
+                {\"type\": \"divider\"},
+                {
+                  \"type\": \"section\",
+                  \"text\": {
+                    \"type\": \"mrkdwn\",
+                    \"text\": \"*📋 Release Summary: ${PR_COUNT} PRs from ${AUTHOR_COUNT} contributors*\n\n${PR_SUMMARY}\"
+                  }
                 },
                 {\"type\": \"divider\"},
                 {
