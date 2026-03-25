@@ -71,8 +71,12 @@ function saveTodos(todos) {
   }
 }
 
+let sortOrder = localStorage.getItem("todo-app:sort") || "newest";
+
 function byUpdatedDesc(a, b) {
-  return b.updatedAt - a.updatedAt;
+  return sortOrder === "newest"
+    ? b.updatedAt - a.updatedAt
+    : a.updatedAt - b.updatedAt;
 }
 
 /**
@@ -359,6 +363,31 @@ function showToast(message, type = "info", duration = 2500) {
     toast.addEventListener("animationend", () => toast.remove());
   }, duration);
 }
+
+// Theme toggle
+const themeToggleBtn = el("theme-toggle");
+const savedTheme = localStorage.getItem("todo-app:theme") || "dark";
+document.documentElement.setAttribute("data-theme", savedTheme);
+themeToggleBtn.textContent = savedTheme === "dark" ? "Light Mode" : "Dark Mode";
+
+themeToggleBtn.addEventListener("click", () => {
+  const current = document.documentElement.getAttribute("data-theme");
+  const next = current === "dark" ? "light" : "dark";
+  document.documentElement.setAttribute("data-theme", next);
+  localStorage.setItem("todo-app:theme", next);
+  themeToggleBtn.textContent = next === "dark" ? "Light Mode" : "Dark Mode";
+});
+
+// Sort order toggle
+const sortToggleBtn = el("sort-toggle");
+sortToggleBtn.textContent = sortOrder === "newest" ? "Newest first" : "Oldest first";
+
+sortToggleBtn.addEventListener("click", () => {
+  sortOrder = sortOrder === "newest" ? "oldest" : "newest";
+  localStorage.setItem("todo-app:sort", sortOrder);
+  sortToggleBtn.textContent = sortOrder === "newest" ? "Newest first" : "Oldest first";
+  upsert([...todos]);
+});
 
 // Toast notification preference toggle
 const toastToggleBtn = el("toast-toggle");

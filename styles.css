@@ -23,6 +23,38 @@
     Arial, "Apple Color Emoji", "Segoe UI Emoji";
 }
 
+[data-theme="light"] {
+  --background: #fafafa;
+  --foreground: #09090b;
+  --card: #ffffff;
+  --card-foreground: #09090b;
+  --primary: #18181b;
+  --primary-foreground: #fafafa;
+  --secondary: #f4f4f5;
+  --secondary-foreground: #18181b;
+  --muted: #f4f4f5;
+  --muted-foreground: #71717a;
+  --accent: #f4f4f5;
+  --accent-foreground: #18181b;
+  --destructive: #fca5a5;
+  --destructive-foreground: #7f1d1d;
+  --border: #e4e4e7;
+  --input: #e4e4e7;
+  --ring: #52525b;
+}
+
+.theme-toggle-btn {
+  position: absolute;
+  right: 0;
+  top: 0;
+  font-size: 12px !important;
+  height: 28px !important;
+}
+
+.header {
+  position: relative;
+}
+
 *,
 *::before,
 *::after {
