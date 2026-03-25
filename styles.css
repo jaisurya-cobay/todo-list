@@ -273,6 +273,29 @@ input[type="text"]:focus {
   opacity: 0.7;
 }
 
+/* ── Shortcuts panel ── */
+
+.shortcuts-panel {
+  margin: 8px 0 4px;
+  padding: 8px 12px;
+  font-size: 12px;
+  color: var(--muted-foreground);
+  background: var(--secondary);
+  border-radius: var(--radius);
+}
+
+.shortcuts-panel kbd {
+  display: inline-block;
+  padding: 2px 6px;
+  font-size: 11px;
+  font-family: inherit;
+  background: var(--background);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--foreground);
+  margin-right: 2px;
+}
+
 /* ── List ── */
 
 .list {

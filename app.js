@@ -352,5 +352,11 @@ function showToast(message, type = "info", duration = 2500) {
   }, duration);
 }
 
+// Keyboard shortcuts panel toggle
+el("shortcuts-toggle").addEventListener("click", () => {
+  const panel = el("shortcuts-panel");
+  panel.hidden = !panel.hidden;
+});
+
 // Initial render
 render();
