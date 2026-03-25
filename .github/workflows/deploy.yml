@@ -146,8 +146,9 @@ jobs:
           LAST_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
 
           if [ -n "$LAST_TAG" ]; then
-            # Convert tag date to UTC ISO format for comparison with gh mergedAt
-            SINCE_DATE=$(TZ=UTC git log -1 --format=%aI "$LAST_TAG" | sed 's/+00:00$/Z/')
+            # Get tag timestamp as Unix epoch then convert to UTC ISO format
+            TAG_EPOCH=$(git log -1 --format=%at "$LAST_TAG")
+            SINCE_DATE=$(date -u -d "@${TAG_EPOCH}" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -r "${TAG_EPOCH}" +%Y-%m-%dT%H:%M:%SZ)
           else
             SINCE_DATE="2000-01-01T00:00:00Z"
           fi
