@@ -51,10 +51,6 @@
   height: 28px !important;
 }
 
-.header {
-  position: relative;
-}
-
 *,
 *::before,
 *::after {
@@ -86,6 +82,7 @@ body {
 
 .header {
   margin-bottom: 24px;
+  position: relative;
 }
 
 .brand h1 {
