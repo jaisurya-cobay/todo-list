@@ -68,7 +68,7 @@ jobs:
       - name: Notify Slack - Staging deployment
         if: always()
         env:
-          SLACK_WEBHOOK_URL: ${{ secrets.RELEASE_SLACK_WEBHOOK_URL }}
+          SLACK_WEBHOOK_URL: ${{ secrets.STAGING_SLACK_WEBHOOK_URL }}
           JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
           PR_NUM: ${{ github.event.pull_request.number }}
           PR_TITLE: ${{ github.event.pull_request.title }}
