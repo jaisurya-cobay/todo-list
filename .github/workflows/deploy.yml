@@ -54,7 +54,7 @@ jobs:
             echo "found=true" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Transition issues to Prod
+      - name: Transition issues to Production
         if: steps.issues.outputs.found == 'true'
         env:
           JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
@@ -63,26 +63,26 @@ jobs:
         run: |
           REPO="${{ github.repository }}"
 
-          PROD_TRANSITION_ID="51"
+          PRODUCTION_TRANSITION_ID="51"
 
           for KEY in ${{ steps.issues.outputs.keys }}; do
             echo "Processing ${KEY}..."
 
-            # Transition to Prod
+            # Transition to Production
             curl -s -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
               -H "Content-Type: application/json" \
               -X POST \
               "${JIRA_BASE_URL}/rest/api/3/issue/${KEY}/transitions" \
-              -d "{\"transition\":{\"id\":\"${PROD_TRANSITION_ID}\"}}"
+              -d "{\"transition\":{\"id\":\"${PRODUCTION_TRANSITION_ID}\"}}"
 
             # Add deployment comment
             curl -s -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
               -H "Content-Type: application/json" \
               -X POST \
               "${JIRA_BASE_URL}/rest/api/3/issue/${KEY}/comment" \
-              -d "{\"body\":{\"type\":\"doc\",\"version\":1,\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"Deployed to production (${SHORT_SHA})\"},{\"type\":\"hardBreak\"},{\"type\":\"text\",\"text\":\"Repo: ${REPO}\"}]}]}}"
+              -d "{\"body\":{\"type\":\"doc\",\"version\":1,\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"Deployed to Production (${SHORT_SHA})\"},{\"type\":\"hardBreak\"},{\"type\":\"text\",\"text\":\"Repo: ${REPO}\"}]}]}}"
 
-            echo "  -> ${KEY} transitioned to Prod"
+            echo "  -> ${KEY} transitioned to Production"
           done
 
           echo "### Jira Issues in Production" >> "$GITHUB_STEP_SUMMARY"
@@ -143,6 +143,27 @@ jobs:
 
             echo "  -> ${KEY} linked to ${VERSION_NAME}"
           done
+
+      - name: Transition issues to Done
+        if: steps.issues.outputs.found == 'true'
+        env:
+          JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
+          JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
+          JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+        run: |
+          DONE_TRANSITION_ID="31"
+
+          for KEY in ${{ steps.issues.outputs.keys }}; do
+            curl -s -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
+              -H "Content-Type: application/json" \
+              -X POST \
+              "${JIRA_BASE_URL}/rest/api/3/issue/${KEY}/transitions" \
+              -d "{\"transition\":{\"id\":\"${DONE_TRANSITION_ID}\"}}"
+
+            echo "  -> ${KEY} transitioned to Done"
+          done
+
+          echo "### Jira Issues marked Done" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Collect merged PRs since last release
         id: prs
