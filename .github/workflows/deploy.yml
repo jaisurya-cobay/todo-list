@@ -11,11 +11,20 @@ permissions:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    env:
+      RELEASE_DATE: ""
+      RELEASE_TAG: ""
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - name: Set release variables
+        run: |
+          echo "RELEASE_DATE=$(date +%Y-%m-%d)" >> "$GITHUB_ENV"
+          echo "RELEASE_TAG=release-$(date +%Y-%m-%d)-${{ github.run_number }}" >> "$GITHUB_ENV"
+          echo "SHORT_SHA=${GITHUB_SHA:0:7}" >> "$GITHUB_ENV"
 
       - name: Build
         run: echo "Building..."
@@ -45,7 +54,7 @@ jobs:
             echo "found=true" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Transition issues to Prod
+      - name: Transition issues to Production
         if: steps.issues.outputs.found == 'true'
         env:
           JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
@@ -53,29 +62,27 @@ jobs:
           JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
         run: |
           REPO="${{ github.repository }}"
-          SHA="${{ github.sha }}"
-          SHORT_SHA="${SHA:0:7}"
 
-          PROD_TRANSITION_ID="51"
+          PRODUCTION_TRANSITION_ID="51"
 
           for KEY in ${{ steps.issues.outputs.keys }}; do
             echo "Processing ${KEY}..."
 
-            # Transition to Prod
+            # Transition to Production
             curl -s -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
               -H "Content-Type: application/json" \
               -X POST \
               "${JIRA_BASE_URL}/rest/api/3/issue/${KEY}/transitions" \
-              -d "{\"transition\":{\"id\":\"${PROD_TRANSITION_ID}\"}}"
+              -d "{\"transition\":{\"id\":\"${PRODUCTION_TRANSITION_ID}\"}}"
 
             # Add deployment comment
             curl -s -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
               -H "Content-Type: application/json" \
               -X POST \
               "${JIRA_BASE_URL}/rest/api/3/issue/${KEY}/comment" \
-              -d "{\"body\":{\"type\":\"doc\",\"version\":1,\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"Deployed to production (${SHORT_SHA})\"},{\"type\":\"hardBreak\"},{\"type\":\"text\",\"text\":\"Repo: ${REPO}\"}]}]}}"
+              -d "{\"body\":{\"type\":\"doc\",\"version\":1,\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"Deployed to Production (${SHORT_SHA})\"},{\"type\":\"hardBreak\"},{\"type\":\"text\",\"text\":\"Repo: ${REPO}\"}]}]}}"
 
-            echo "  -> ${KEY} transitioned to Prod"
+            echo "  -> ${KEY} transitioned to Production"
           done
 
           echo "### Jira Issues in Production" >> "$GITHUB_STEP_SUMMARY"
@@ -89,8 +96,7 @@ jobs:
           JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
           JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
         run: |
-          DATE=$(date +%Y-%m-%d)
-          VERSION_NAME="release-${DATE}-${{ github.run_number }}"
+          VERSION_NAME="${RELEASE_TAG}"
           PROJECT_ID="10208"
 
           # Create Jira version
@@ -103,7 +109,7 @@ jobs:
               \"name\": \"${VERSION_NAME}\",
               \"projectId\": ${PROJECT_ID},
               \"released\": true,
-              \"releaseDate\": \"${DATE}\",
+              \"releaseDate\": \"${RELEASE_DATE}\",
               \"description\": \"Automated release from GitHub Actions run #${{ github.run_number }}\"
             }")
 
@@ -137,6 +143,27 @@ jobs:
 
             echo "  -> ${KEY} linked to ${VERSION_NAME}"
           done
+
+      - name: Transition issues to Done
+        if: steps.issues.outputs.found == 'true'
+        env:
+          JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
+          JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
+          JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+        run: |
+          DONE_TRANSITION_ID="31"
+
+          for KEY in ${{ steps.issues.outputs.keys }}; do
+            curl -s -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
+              -H "Content-Type: application/json" \
+              -X POST \
+              "${JIRA_BASE_URL}/rest/api/3/issue/${KEY}/transitions" \
+              -d "{\"transition\":{\"id\":\"${DONE_TRANSITION_ID}\"}}"
+
+            echo "  -> ${KEY} transitioned to Done"
+          done
+
+          echo "### Jira Issues marked Done" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Collect merged PRs since last release
         id: prs
@@ -208,8 +235,6 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
         run: |
-          DATE=$(date +%Y-%m-%d)
-          TAG="release-${DATE}-${{ github.run_number }}"
           KEYS="${{ steps.issues.outputs.keys }}"
 
           NOTES="## 📦 Release Summary\n\n"
@@ -225,18 +250,18 @@ jobs:
             done
           fi
 
-          NOTES+="\n**Deployed:** ${DATE}"
+          NOTES+="\n**Deployed:** ${RELEASE_DATE}"
 
-          git tag "$TAG"
-          git push origin "$TAG"
+          git tag "${RELEASE_TAG}"
+          git push origin "${RELEASE_TAG}"
 
-          gh release create "$TAG" \
-            --title "Release ${DATE} (#${{ github.run_number }})" \
+          gh release create "${RELEASE_TAG}" \
+            --title "Release ${RELEASE_DATE} (#${{ github.run_number }})" \
             --notes "$(echo -e "$NOTES")" \
             --latest
 
           echo "### Release Created" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Tag:** ${TAG}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Tag:** ${RELEASE_TAG}" >> "$GITHUB_STEP_SUMMARY"
           echo "- **PRs included:** ${{ steps.prs.outputs.pr_count }}" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Notify Slack releases-test channel
@@ -245,10 +270,7 @@ jobs:
           SLACK_WEBHOOK_URL: ${{ secrets.RELEASE_SLACK_WEBHOOK_URL }}
           JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
         run: |
-          DATE=$(date +%Y-%m-%d)
-          TAG="release-${DATE}-${{ github.run_number }}"
-          SHORT_SHA="${{ github.sha }}"
-          SHORT_SHA="${SHORT_SHA:0:7}"
+          TAG="${RELEASE_TAG}"
           IST_TIME=$(TZ='Asia/Kolkata' date "+%b %d, %Y %I:%M %p IST")
           UTC_TIME=$(date -u "+%b %d, %Y %I:%M %p UTC")
           KEYS="${{ steps.issues.outputs.keys }}"
