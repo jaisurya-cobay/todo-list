@@ -133,8 +133,7 @@ jobs:
                 {
                   \"type\": \"actions\",
                   \"elements\": [
-                    {\"type\": \"button\", \"text\": {\"type\": \"plain_text\", \"text\": \"View PR\"}, \"url\": \"${PR_URL}\"},
-                    {\"type\": \"button\", \"text\": {\"type\": \"plain_text\", \"text\": \"View Run\"}, \"url\": \"${RUN_URL}\"}
+                    {\"type\": \"button\", \"text\": {\"type\": \"plain_text\", \"text\": \"View PR\"}, \"url\": \"${PR_URL}\"}
                   ]
                 }
               ]
