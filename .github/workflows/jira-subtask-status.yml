@@ -1,0 +1,241 @@
+name: Jira Subtask Status Automation
+
+# Subtask status auto-move based on commit keywords
+# Developer commit convention:
+#   "XPRMNTS-XX started ..." → To Do → In Progress
+#   "XPRMNTS-XX completed ..." → In Progress → Code Review
+# PR merge → all subtasks → QA (Staging)
+# Production deploy → all subtasks → Prod → Done
+
+on:
+  push:
+    branches:
+      - 'feature/**'
+  pull_request:
+    types: [closed]
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      deploy_env:
+        description: 'Deployment environment'
+        required: true
+        type: choice
+        options:
+          - production
+
+jobs:
+
+  # ─── On Commit: Move individual subtasks based on keywords ───
+  on-commit:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Process commits for subtask status
+        env:
+          JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
+          JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
+          JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+        run: |
+          move_issue() {
+            local KEY=$1
+            local TARGET_STATUS=$2
+            local TRANSITION_ID=$3
+
+            echo "  Moving $KEY → $TARGET_STATUS (transition: $TRANSITION_ID)..."
+
+            RESULT=$(curl -s -w "\n%{http_code}" -X POST \
+              -u "$JIRA_EMAIL:$JIRA_API_TOKEN" \
+              -H "Content-Type: application/json" \
+              -d "{\"transition\":{\"id\":\"$TRANSITION_ID\"}}" \
+              "$JIRA_BASE_URL/rest/api/3/issue/$KEY/transitions")
+
+            HTTP_CODE=$(echo "$RESULT" | tail -1)
+            BODY=$(echo "$RESULT" | sed '$d')
+
+            if [ "$HTTP_CODE" = "204" ]; then
+              echo "  ✅ $KEY → $TARGET_STATUS"
+            else
+              echo "  ❌ $KEY: Failed (HTTP $HTTP_CODE) - $BODY"
+            fi
+          }
+
+          # Parse each commit message
+          COMMITS='${{ toJSON(github.event.commits.*.message) }}'
+          echo "Commits: $COMMITS"
+
+          echo "$COMMITS" | jq -r '.[]' | while IFS= read -r MSG; do
+            echo ""
+            echo "━━━ Commit: $MSG ━━━"
+
+            KEY=$(echo "$MSG" | grep -oE '[A-Z]+-[0-9]+' | head -1)
+            if [ -z "$KEY" ]; then
+              echo "  No Jira key found, skipping"
+              continue
+            fi
+
+            # "started" → In Progress (transition 21)
+            if echo "$MSG" | grep -qi "started"; then
+              move_issue "$KEY" "In Progress" "21"
+            fi
+
+            # "completed" → Code Review (transition 61)
+            if echo "$MSG" | grep -qi "completed"; then
+              move_issue "$KEY" "Code Review" "61"
+            fi
+          done
+
+  # ─── On PR Merge: Move ALL subtasks to QA (Staging) ───
+  on-pr-merge:
+    if: >
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    steps:
+      - name: Move all subtasks to QA
+        env:
+          JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
+          JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
+          JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+        run: |
+          # Extract parent key from branch name
+          BRANCH="${{ github.event.pull_request.head.ref }}"
+          PARENT_KEY=$(echo "$BRANCH" | grep -oE '[A-Z]+-[0-9]+' | head -1)
+
+          if [ -z "$PARENT_KEY" ]; then
+            echo "No Jira key found in branch: $BRANCH"
+            exit 0
+          fi
+
+          echo "Parent: $PARENT_KEY"
+          echo "Branch: $BRANCH"
+          echo ""
+
+          # Fetch all subtasks under parent
+          SUBTASKS=$(curl -s -u "$JIRA_EMAIL:$JIRA_API_TOKEN" \
+            "$JIRA_BASE_URL/rest/api/3/search?jql=parent=$PARENT_KEY&fields=status,summary")
+
+          TOTAL=$(echo "$SUBTASKS" | jq -r '.total')
+          echo "Found $TOTAL subtasks under $PARENT_KEY"
+          echo ""
+
+          # Move each subtask to QA (transition 41)
+          echo "$SUBTASKS" | jq -r '.issues[] | "\(.key) \(.fields.status.name) \(.fields.summary)"' | while read KEY STATUS SUMMARY; do
+            echo "━━━ $KEY ($STATUS): $SUMMARY ━━━"
+
+            if [ "$STATUS" = "QA" ]; then
+              echo "  - Already in QA"
+              continue
+            fi
+
+            RESULT=$(curl -s -w "\n%{http_code}" -X POST \
+              -u "$JIRA_EMAIL:$JIRA_API_TOKEN" \
+              -H "Content-Type: application/json" \
+              -d '{"transition":{"id":"41"}}' \
+              "$JIRA_BASE_URL/rest/api/3/issue/$KEY/transitions")
+
+            HTTP_CODE=$(echo "$RESULT" | tail -1)
+
+            if [ "$HTTP_CODE" = "204" ]; then
+              echo "  ✅ $KEY → QA"
+            else
+              echo "  ❌ Failed (HTTP $HTTP_CODE)"
+            fi
+          done
+
+          # Move parent to QA too
+          echo ""
+          echo "━━━ Moving parent $PARENT_KEY → QA ━━━"
+          RESULT=$(curl -s -w "\n%{http_code}" -X POST \
+            -u "$JIRA_EMAIL:$JIRA_API_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d '{"transition":{"id":"41"}}' \
+            "$JIRA_BASE_URL/rest/api/3/issue/$PARENT_KEY/transitions")
+
+          HTTP_CODE=$(echo "$RESULT" | tail -1)
+          if [ "$HTTP_CODE" = "204" ]; then
+            echo "  ✅ $PARENT_KEY → QA"
+          else
+            echo "  ❌ Failed (HTTP $HTTP_CODE)"
+          fi
+
+  # ─── On Production Deploy: Move ALL subtasks to Prod → Done ───
+  on-deploy-prod:
+    if: >
+      github.event_name == 'workflow_dispatch' &&
+      github.event.inputs.deploy_env == 'production'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Move all subtasks to Prod then Done
+        env:
+          JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
+          JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
+          JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+        run: |
+          # Get parent keys from recent merge commits
+          PARENT_KEYS=$(git log --merges --since="7 days ago" --pretty=format:"%s" | \
+            grep -oE '[A-Z]+-[0-9]+' | sort -u)
+
+          if [ -z "$PARENT_KEYS" ]; then
+            echo "No Jira keys found in recent merges"
+            exit 0
+          fi
+
+          for PARENT_KEY in $PARENT_KEYS; do
+            echo "══════════════════════════════════════"
+            echo "Processing parent: $PARENT_KEY"
+            echo "══════════════════════════════════════"
+
+            SUBTASKS=$(curl -s -u "$JIRA_EMAIL:$JIRA_API_TOKEN" \
+              "$JIRA_BASE_URL/rest/api/3/search?jql=parent=$PARENT_KEY&fields=status,summary")
+
+            echo "$SUBTASKS" | jq -r '.issues[].key' | while read KEY; do
+              echo ""
+              echo "━━━ $KEY ━━━"
+
+              # Step 1: Move to Prod (transition 51)
+              RESULT=$(curl -s -w "\n%{http_code}" -X POST \
+                -u "$JIRA_EMAIL:$JIRA_API_TOKEN" \
+                -H "Content-Type: application/json" \
+                -d '{"transition":{"id":"51"}}' \
+                "$JIRA_BASE_URL/rest/api/3/issue/$KEY/transitions")
+              HTTP_CODE=$(echo "$RESULT" | tail -1)
+              if [ "$HTTP_CODE" = "204" ]; then
+                echo "  ✅ $KEY → Prod"
+              else
+                echo "  ⚠️ $KEY → Prod failed (HTTP $HTTP_CODE), may already be there"
+              fi
+
+              # Step 2: Move to Done (transition 31)
+              RESULT=$(curl -s -w "\n%{http_code}" -X POST \
+                -u "$JIRA_EMAIL:$JIRA_API_TOKEN" \
+                -H "Content-Type: application/json" \
+                -d '{"transition":{"id":"31"}}' \
+                "$JIRA_BASE_URL/rest/api/3/issue/$KEY/transitions")
+              HTTP_CODE=$(echo "$RESULT" | tail -1)
+              if [ "$HTTP_CODE" = "204" ]; then
+                echo "  ✅ $KEY → Done"
+              else
+                echo "  ⚠️ $KEY → Done failed (HTTP $HTTP_CODE)"
+              fi
+            done
+
+            # Parent task also to Prod → Done
+            echo ""
+            echo "━━━ Parent $PARENT_KEY ━━━"
+            curl -s -X POST -u "$JIRA_EMAIL:$JIRA_API_TOKEN" \
+              -H "Content-Type: application/json" \
+              -d '{"transition":{"id":"51"}}' \
+              "$JIRA_BASE_URL/rest/api/3/issue/$PARENT_KEY/transitions" > /dev/null 2>&1
+
+            curl -s -X POST -u "$JIRA_EMAIL:$JIRA_API_TOKEN" \
+              -H "Content-Type: application/json" \
+              -d '{"transition":{"id":"31"}}' \
+              "$JIRA_BASE_URL/rest/api/3/issue/$PARENT_KEY/transitions" > /dev/null 2>&1
+
+            echo "  ✅ $PARENT_KEY → Prod → Done"
+          done
