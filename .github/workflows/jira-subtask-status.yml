@@ -45,10 +45,12 @@ jobs:
             echo "Processing $KEY → $TARGET_STATUS (transition: $TRANSITION_ID)..."
 
             # Get issue details
-            ISSUE=$(curl -s -u "$JIRA_EMAIL:$JIRA_API_TOKEN" \
-              "$JIRA_BASE_URL/rest/api/3/issue/$KEY?fields=issuetype,status,parent")
+            API_URL="$JIRA_BASE_URL/rest/api/3/issue/$KEY?fields=issuetype,status,parent"
+            echo "  DEBUG API URL: $API_URL"
+            ISSUE=$(curl -s -u "$JIRA_EMAIL:$JIRA_API_TOKEN" "$API_URL")
 
-            # Debug: show raw response
+            # Debug: show raw response (first 300 chars)
+            echo "  DEBUG raw response: $(echo "$ISSUE" | head -c 300)"
             echo "  DEBUG issuetype.name: $(echo "$ISSUE" | jq -r '.fields.issuetype.name')"
             echo "  DEBUG parent: $(echo "$ISSUE" | jq -r '.fields.parent.key // "none"')"
 
