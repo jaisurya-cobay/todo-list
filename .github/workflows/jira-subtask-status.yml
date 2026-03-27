@@ -37,39 +37,12 @@ jobs:
           JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
           JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
         run: |
-          move_subtask() {
+          move_issue() {
             local KEY=$1
             local TARGET_STATUS=$2
             local TRANSITION_ID=$3
 
-            echo "Processing $KEY → $TARGET_STATUS (transition: $TRANSITION_ID)..."
-
-            # Get issue details
-            API_URL="$JIRA_BASE_URL/rest/api/3/issue/$KEY?fields=issuetype,status,parent"
-            echo "  DEBUG API URL: $API_URL"
-            ISSUE=$(curl -s -u "$JIRA_EMAIL:$JIRA_API_TOKEN" "$API_URL")
-
-            # Debug: show raw response (first 300 chars)
-            echo "  DEBUG raw response: $(echo "$ISSUE" | head -c 300)"
-            echo "  DEBUG issuetype.name: $(echo "$ISSUE" | jq -r '.fields.issuetype.name')"
-            echo "  DEBUG parent: $(echo "$ISSUE" | jq -r '.fields.parent.key // "none"')"
-
-            CURRENT=$(echo "$ISSUE" | jq -r '.fields.status.name')
-            HAS_PARENT=$(echo "$ISSUE" | jq -r '.fields.parent.key // "none"')
-            ISSUE_TYPE=$(echo "$ISSUE" | jq -r '.fields.issuetype.name')
-
-            # Check if it's a subtask by checking parent field OR issuetype name
-            if [ "$HAS_PARENT" = "none" ] && [ "$ISSUE_TYPE" != "Sub-task" ]; then
-              echo "  ⏭ $KEY is not a subtask (type: $ISSUE_TYPE, parent: $HAS_PARENT), skipping"
-              return
-            fi
-
-            if [ "$CURRENT" = "$TARGET_STATUS" ]; then
-              echo "  - $KEY already in $TARGET_STATUS"
-              return
-            fi
-
-            echo "  Current: $CURRENT → Moving to: $TARGET_STATUS"
+            echo "  Moving $KEY → $TARGET_STATUS (transition: $TRANSITION_ID)..."
 
             RESULT=$(curl -s -w "\n%{http_code}" -X POST \
               -u "$JIRA_EMAIL:$JIRA_API_TOKEN" \
@@ -78,12 +51,12 @@ jobs:
               "$JIRA_BASE_URL/rest/api/3/issue/$KEY/transitions")
 
             HTTP_CODE=$(echo "$RESULT" | tail -1)
+            BODY=$(echo "$RESULT" | sed '$d')
 
             if [ "$HTTP_CODE" = "204" ]; then
-              echo "  ✅ $KEY: $CURRENT → $TARGET_STATUS"
+              echo "  ✅ $KEY → $TARGET_STATUS"
             else
-              echo "  ❌ $KEY: Failed to move (HTTP $HTTP_CODE)"
-              echo "  Response: $(echo "$RESULT" | head -1)"
+              echo "  ❌ $KEY: Failed (HTTP $HTTP_CODE) - $BODY"
             fi
           }
 
@@ -103,12 +76,12 @@ jobs:
 
             # "started" → In Progress (transition 21)
             if echo "$MSG" | grep -qi "started"; then
-              move_subtask "$KEY" "In Progress" "21"
+              move_issue "$KEY" "In Progress" "21"
             fi
 
             # "completed" → Code Review (transition 61)
             if echo "$MSG" | grep -qi "completed"; then
-              move_subtask "$KEY" "Code Review" "61"
+              move_issue "$KEY" "Code Review" "61"
             fi
           done
 
