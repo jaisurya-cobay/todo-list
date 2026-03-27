@@ -114,7 +114,7 @@ jobs:
           # Fetch all subtasks under parent using URL-encoded JQL
           JQL=$(python3 -c "import urllib.parse; print(urllib.parse.quote('parent=$PARENT_KEY'))")
           SUBTASKS=$(curl -s -u "$JIRA_EMAIL:$JIRA_API_TOKEN" \
-            "$JIRA_BASE_URL/rest/api/3/search?jql=${JQL}&fields=status,summary")
+            "$JIRA_BASE_URL/rest/api/3/search/jql?jql=${JQL}&fields=status,summary")
 
           echo "DEBUG subtasks response: $(echo "$SUBTASKS" | head -c 500)"
 
@@ -126,7 +126,7 @@ jobs:
             echo "No subtasks found, trying alternate JQL..."
             JQL2=$(python3 -c "import urllib.parse; print(urllib.parse.quote('parent = $PARENT_KEY'))")
             SUBTASKS=$(curl -s -u "$JIRA_EMAIL:$JIRA_API_TOKEN" \
-              "$JIRA_BASE_URL/rest/api/3/search?jql=${JQL2}&fields=status,summary")
+              "$JIRA_BASE_URL/rest/api/3/search/jql?jql=${JQL2}&fields=status,summary")
             TOTAL=$(echo "$SUBTASKS" | jq -r '.total // 0')
             echo "Retry found $TOTAL subtasks"
           fi
@@ -199,7 +199,7 @@ jobs:
 
             JQL=$(python3 -c "import urllib.parse; print(urllib.parse.quote('parent = $PARENT_KEY'))")
             SUBTASKS=$(curl -s -u "$JIRA_EMAIL:$JIRA_API_TOKEN" \
-              "$JIRA_BASE_URL/rest/api/3/search?jql=${JQL}&fields=status,summary")
+              "$JIRA_BASE_URL/rest/api/3/search/jql?jql=${JQL}&fields=status,summary")
 
             echo "$SUBTASKS" | jq -r '.issues[].key' | while read KEY; do
               echo ""
