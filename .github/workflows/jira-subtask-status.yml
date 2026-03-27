@@ -44,15 +44,21 @@ jobs:
 
             echo "Processing $KEY → $TARGET_STATUS (transition: $TRANSITION_ID)..."
 
-            # Verify it's a subtask
+            # Get issue details
             ISSUE=$(curl -s -u "$JIRA_EMAIL:$JIRA_API_TOKEN" \
-              "$JIRA_BASE_URL/rest/api/3/issue/$KEY?fields=issuetype,status")
+              "$JIRA_BASE_URL/rest/api/3/issue/$KEY?fields=issuetype,status,parent")
 
-            IS_SUBTASK=$(echo "$ISSUE" | jq -r '.fields.issuetype.subtask')
+            # Debug: show raw response
+            echo "  DEBUG issuetype.name: $(echo "$ISSUE" | jq -r '.fields.issuetype.name')"
+            echo "  DEBUG parent: $(echo "$ISSUE" | jq -r '.fields.parent.key // "none"')"
+
             CURRENT=$(echo "$ISSUE" | jq -r '.fields.status.name')
+            HAS_PARENT=$(echo "$ISSUE" | jq -r '.fields.parent.key // "none"')
+            ISSUE_TYPE=$(echo "$ISSUE" | jq -r '.fields.issuetype.name')
 
-            if [ "$IS_SUBTASK" != "true" ]; then
-              echo "  ⏭ $KEY is not a subtask (it's a parent), skipping"
+            # Check if it's a subtask by checking parent field OR issuetype name
+            if [ "$HAS_PARENT" = "none" ] && [ "$ISSUE_TYPE" != "Sub-task" ]; then
+              echo "  ⏭ $KEY is not a subtask (type: $ISSUE_TYPE, parent: $HAS_PARENT), skipping"
               return
             fi
 
@@ -60,6 +66,8 @@ jobs:
               echo "  - $KEY already in $TARGET_STATUS"
               return
             fi
+
+            echo "  Current: $CURRENT → Moving to: $TARGET_STATUS"
 
             RESULT=$(curl -s -w "\n%{http_code}" -X POST \
               -u "$JIRA_EMAIL:$JIRA_API_TOKEN" \
@@ -73,7 +81,7 @@ jobs:
               echo "  ✅ $KEY: $CURRENT → $TARGET_STATUS"
             else
               echo "  ❌ $KEY: Failed to move (HTTP $HTTP_CODE)"
-              echo "$RESULT" | head -1
+              echo "  Response: $(echo "$RESULT" | head -1)"
             fi
           }
 
