@@ -407,3 +407,4 @@ el("shortcuts-toggle").addEventListener("click", () => {
 
 // Initial render
 render();
+<!-- v3 -->
