@@ -289,8 +289,10 @@ function toggleAll() {
 
 function clearCompleted() {
   const count = todos.filter((t) => t.completed).length;
+  if (count === 0) return;
+  if (!confirm(`Clear ${count} completed task${count > 1 ? "s" : ""}?`)) return;
   upsert(todos.filter((t) => !t.completed));
-  if (count > 0) showToast(`Cleared ${count} completed task${count > 1 ? "s" : ""}`, "info");
+  showToast(`Cleared ${count} completed task${count > 1 ? "s" : ""}`, "info");
 }
 
 function exportAsCSV() {
