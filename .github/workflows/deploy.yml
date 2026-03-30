@@ -275,7 +275,6 @@ jobs:
           UTC_TIME=$(date -u "+%b %d, %Y %I:%M %p UTC")
           KEYS="${{ steps.issues.outputs.keys }}"
           STATUS="${{ job.status }}"
-          RUN_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
 
           if [ "$STATUS" = "success" ]; then
             HEADER="🚀  Release Deployed to Production"
@@ -355,7 +354,6 @@ jobs:
                 {
                   \"type\": \"actions\",
                   \"elements\": [
-                    {\"type\": \"button\", \"text\": {\"type\": \"plain_text\", \"text\": \"View Run\"}, \"url\": \"${RUN_URL}\"},
                     {\"type\": \"button\", \"text\": {\"type\": \"plain_text\", \"text\": \"GitHub Release\"}, \"url\": \"https://github.com/${{ github.repository }}/releases/tag/${TAG}\"}
                   ]
                 }
