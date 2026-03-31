@@ -3,7 +3,7 @@ name: Deploy to Production
 on:
   push:
     branches:
-      - main
+      - master
 
 permissions:
   contents: write
@@ -186,8 +186,8 @@ jobs:
             --json number,title,author,mergedAt,headRefName \
             --jq "[.[] | select(.mergedAt > \"${SINCE_DATE}\")]")
 
-          # Also get feature PRs merged directly to main (not from develop)
-          MAIN_PRS=$(gh pr list --base main --state merged --limit 100 \
+          # Also get feature PRs merged directly to master (not from develop)
+          MAIN_PRS=$(gh pr list --base master --state merged --limit 100 \
             --json number,title,author,mergedAt,headRefName \
             --jq "[.[] | select(.mergedAt > \"${SINCE_DATE}\" and .headRefName != \"develop\")]")
 
