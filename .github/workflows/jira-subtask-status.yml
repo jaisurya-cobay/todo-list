@@ -11,6 +11,7 @@ on:
   push:
     branches:
       - 'feature/**'
+      - 'XPRMNTS-*'
   pull_request:
     types: [closed]
     branches:
