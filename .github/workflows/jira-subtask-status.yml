@@ -1,11 +1,11 @@
-name: Jira Subtask Status Automation
+name: Jira - Subtask Status Automation
 
-# Subtask status auto-move based on commit keywords
+# Subtask status auto-move based on commit keywords and PR events
 # Developer commit convention:
-#   "XPRMNTS-XX started ..." → To Do → In Progress
-#   "XPRMNTS-XX completed ..." → In Progress → Code Review
-# PR merge → all subtasks → QA (Staging)
-# Production deploy → all subtasks → Prod → Done
+#   "PROJ-XX started ..." → To Do → In Progress
+#   "PROJ-XX completed ..." → In Progress → Code Review
+# PR merge to master → all subtasks → Staging
+# Production deploy (manual) → subtasks → Production → Done
 
 on:
   push:
@@ -24,13 +24,13 @@ on:
         options:
           - production
       subtask_keys:
-        description: 'Subtask keys to release (comma separated, e.g. XPRMNTS-61,XPRMNTS-62). Leave empty for ALL subtasks.'
+        description: 'Subtask keys (comma separated, e.g. PROJ-61,PROJ-62). Leave empty for ALL subtasks.'
         required: false
         type: string
 
 jobs:
 
-  # ─── On Commit: Move individual subtasks based on keywords ───
+  # --- On Commit: Move individual subtasks based on keywords ---
   on-commit:
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
@@ -40,37 +40,31 @@ jobs:
           JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
           JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
           JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+          IN_PROGRESS_TRANSITION_ID: ${{ vars.JIRA_TRANSITION_IN_PROGRESS || '21' }}
+          CODE_REVIEW_TRANSITION_ID: ${{ vars.JIRA_TRANSITION_CODE_REVIEW || '61' }}
         run: |
           move_issue() {
             local KEY=$1
             local TARGET_STATUS=$2
             local TRANSITION_ID=$3
 
-            echo "  Moving $KEY → $TARGET_STATUS (transition: $TRANSITION_ID)..."
-
-            RESULT=$(curl -s -w "\n%{http_code}" -X POST \
+            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
               -u "$JIRA_EMAIL:$JIRA_API_TOKEN" \
               -H "Content-Type: application/json" \
               -d "{\"transition\":{\"id\":\"$TRANSITION_ID\"}}" \
               "$JIRA_BASE_URL/rest/api/3/issue/$KEY/transitions")
 
-            HTTP_CODE=$(echo "$RESULT" | tail -1)
-            BODY=$(echo "$RESULT" | sed '$d')
-
             if [ "$HTTP_CODE" = "204" ]; then
-              echo "  ✅ $KEY → $TARGET_STATUS"
+              echo "  -> $KEY → $TARGET_STATUS"
             else
-              echo "  ❌ $KEY: Failed (HTTP $HTTP_CODE) - $BODY"
+              echo "  -> $KEY failed (HTTP $HTTP_CODE)"
             fi
           }
 
-          # Parse each commit message
           COMMITS='${{ toJSON(github.event.commits.*.message) }}'
-          echo "Commits: $COMMITS"
 
           echo "$COMMITS" | jq -r '.[]' | while IFS= read -r MSG; do
-            echo ""
-            echo "━━━ Commit: $MSG ━━━"
+            echo "--- Commit: $MSG ---"
 
             KEY=$(echo "$MSG" | grep -oE '[A-Z]+-[0-9]+' | head -1)
             if [ -z "$KEY" ]; then
@@ -78,31 +72,29 @@ jobs:
               continue
             fi
 
-            # "started" → In Progress (transition 21)
             if echo "$MSG" | grep -qi "started"; then
-              move_issue "$KEY" "In Progress" "21"
+              move_issue "$KEY" "In Progress" "$IN_PROGRESS_TRANSITION_ID"
             fi
 
-            # "completed" → Code Review (transition 61)
             if echo "$MSG" | grep -qi "completed"; then
-              move_issue "$KEY" "Code Review" "61"
+              move_issue "$KEY" "Code Review" "$CODE_REVIEW_TRANSITION_ID"
             fi
           done
 
-  # ─── On PR Merge: Move ALL subtasks to QA (Staging) ───
+  # --- On PR Merge: Move ALL subtasks to Staging ---
   on-pr-merge:
     if: >
       github.event_name == 'pull_request' &&
       github.event.pull_request.merged == true
     runs-on: ubuntu-latest
     steps:
-      - name: Move all subtasks to QA
+      - name: Move all subtasks to Staging
         env:
           JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
           JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
           JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+          STAGING_TRANSITION_ID: ${{ vars.JIRA_TRANSITION_STAGING || '41' }}
         run: |
-          # Extract parent key from branch name
           BRANCH="${{ github.event.pull_request.head.ref }}"
           PARENT_KEY=$(echo "$BRANCH" | grep -oE '[A-Z]+-[0-9]+' | head -1)
 
@@ -113,75 +105,64 @@ jobs:
 
           echo "Parent: $PARENT_KEY"
           echo "Branch: $BRANCH"
-          echo ""
 
-          # Fetch all subtasks under parent using URL-encoded JQL
+          # Fetch subtasks
           JQL=$(python3 -c "import urllib.parse; print(urllib.parse.quote('parent=$PARENT_KEY'))")
           SUBTASKS=$(curl -s -u "$JIRA_EMAIL:$JIRA_API_TOKEN" \
             "$JIRA_BASE_URL/rest/api/3/search/jql?jql=${JQL}&fields=status,summary")
 
-          echo "DEBUG subtasks response: $(echo "$SUBTASKS" | head -c 500)"
-
           TOTAL=$(echo "$SUBTASKS" | jq -r '.total // 0')
           echo "Found $TOTAL subtasks under $PARENT_KEY"
-          echo ""
 
           if [ "$TOTAL" = "0" ]; then
-            echo "No subtasks found, trying alternate JQL..."
             JQL2=$(python3 -c "import urllib.parse; print(urllib.parse.quote('parent = $PARENT_KEY'))")
             SUBTASKS=$(curl -s -u "$JIRA_EMAIL:$JIRA_API_TOKEN" \
               "$JIRA_BASE_URL/rest/api/3/search/jql?jql=${JQL2}&fields=status,summary")
             TOTAL=$(echo "$SUBTASKS" | jq -r '.total // 0')
-            echo "Retry found $TOTAL subtasks"
           fi
 
-          # Move each subtask to QA (transition 41)
+          # Move each subtask to Staging
           echo "$SUBTASKS" | jq -r '.issues[] | .key' | while read KEY; do
-            echo "━━━ $KEY ━━━"
-
-            RESULT=$(curl -s -w "\n%{http_code}" -X POST \
+            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
               -u "$JIRA_EMAIL:$JIRA_API_TOKEN" \
               -H "Content-Type: application/json" \
-              -d '{"transition":{"id":"41"}}' \
+              -d "{\"transition\":{\"id\":\"$STAGING_TRANSITION_ID\"}}" \
               "$JIRA_BASE_URL/rest/api/3/issue/$KEY/transitions")
 
-            HTTP_CODE=$(echo "$RESULT" | tail -1)
-
             if [ "$HTTP_CODE" = "204" ]; then
-              echo "  ✅ $KEY → QA"
+              echo "  -> $KEY → Staging"
             else
-              echo "  ❌ Failed (HTTP $HTTP_CODE)"
+              echo "  -> $KEY failed (HTTP $HTTP_CODE)"
             fi
           done
 
-          # Move parent to QA too
-          echo ""
-          echo "━━━ Moving parent $PARENT_KEY → QA ━━━"
-          RESULT=$(curl -s -w "\n%{http_code}" -X POST \
+          # Move parent to Staging too
+          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
             -u "$JIRA_EMAIL:$JIRA_API_TOKEN" \
             -H "Content-Type: application/json" \
-            -d '{"transition":{"id":"41"}}' \
+            -d "{\"transition\":{\"id\":\"$STAGING_TRANSITION_ID\"}}" \
             "$JIRA_BASE_URL/rest/api/3/issue/$PARENT_KEY/transitions")
 
-          HTTP_CODE=$(echo "$RESULT" | tail -1)
           if [ "$HTTP_CODE" = "204" ]; then
-            echo "  ✅ $PARENT_KEY → QA"
+            echo "  -> $PARENT_KEY → Staging"
           else
-            echo "  ❌ Failed (HTTP $HTTP_CODE)"
+            echo "  -> $PARENT_KEY failed (HTTP $HTTP_CODE)"
           fi
 
-  # ─── On Production Deploy: Move specific subtasks to Prod → Done ───
+  # --- On Production Deploy: Move subtasks to Production → Done ---
   on-deploy-prod:
     if: >
       github.event_name == 'workflow_dispatch' &&
       github.event.inputs.deploy_env == 'production'
     runs-on: ubuntu-latest
     steps:
-      - name: Move subtasks to Prod then Done
+      - name: Move subtasks to Production then Done
         env:
           JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
           JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
           JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+          PRODUCTION_TRANSITION_ID: ${{ vars.JIRA_TRANSITION_PRODUCTION || '51' }}
+          DONE_TRANSITION_ID: ${{ vars.JIRA_TRANSITION_DONE || '31' }}
           SUBTASK_KEYS: ${{ github.event.inputs.subtask_keys }}
         run: |
           if [ -z "$SUBTASK_KEYS" ]; then
@@ -190,42 +171,38 @@ jobs:
           fi
 
           echo "Releasing subtasks: $SUBTASK_KEYS"
-          echo ""
 
-          # Split comma-separated keys
           IFS=',' read -ra KEYS <<< "$SUBTASK_KEYS"
 
           for KEY in "${KEYS[@]}"; do
-            # Trim whitespace
             KEY=$(echo "$KEY" | xargs)
             [ -z "$KEY" ] && continue
 
-            echo "━━━ $KEY ━━━"
+            echo "--- $KEY ---"
 
-            # Move to Prod (transition 51)
-            RESULT=$(curl -s -w "\n%{http_code}" -X POST \
+            # Move to Production
+            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
               -u "$JIRA_EMAIL:$JIRA_API_TOKEN" \
               -H "Content-Type: application/json" \
-              -d '{"transition":{"id":"51"}}' \
+              -d "{\"transition\":{\"id\":\"$PRODUCTION_TRANSITION_ID\"}}" \
               "$JIRA_BASE_URL/rest/api/3/issue/$KEY/transitions")
-            HTTP_CODE=$(echo "$RESULT" | tail -1)
+
             if [ "$HTTP_CODE" = "204" ]; then
-              echo "  ✅ $KEY → Prod"
+              echo "  -> $KEY → Production"
             else
-              echo "  ❌ $KEY → Prod failed (HTTP $HTTP_CODE)"
+              echo "  -> $KEY → Production failed (HTTP $HTTP_CODE)"
             fi
 
-            # Move to Done (transition 31)
-            RESULT=$(curl -s -w "\n%{http_code}" -X POST \
+            # Move to Done
+            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
               -u "$JIRA_EMAIL:$JIRA_API_TOKEN" \
               -H "Content-Type: application/json" \
-              -d '{"transition":{"id":"31"}}' \
+              -d "{\"transition\":{\"id\":\"$DONE_TRANSITION_ID\"}}" \
               "$JIRA_BASE_URL/rest/api/3/issue/$KEY/transitions")
-            HTTP_CODE=$(echo "$RESULT" | tail -1)
+
             if [ "$HTTP_CODE" = "204" ]; then
-              echo "  ✅ $KEY → Done"
+              echo "  -> $KEY → Done"
             else
-              echo "  ❌ $KEY → Done failed (HTTP $HTTP_CODE)"
+              echo "  -> $KEY → Done failed (HTTP $HTTP_CODE)"
             fi
-            echo ""
           done

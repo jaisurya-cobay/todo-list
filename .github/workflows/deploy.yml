@@ -8,12 +8,18 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
     env:
-      RELEASE_DATE: ""
-      RELEASE_TAG: ""
+      JIRA_PROJECT_KEY: ${{ vars.JIRA_PROJECT_KEY || 'XPRMNTS' }}
+      JIRA_PROJECT_ID: ${{ vars.JIRA_PROJECT_ID || '10208' }}
+      PRODUCTION_TRANSITION_ID: ${{ vars.JIRA_TRANSITION_PRODUCTION || '51' }}
+      DONE_TRANSITION_ID: ${{ vars.JIRA_TRANSITION_DONE || '31' }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -35,7 +41,6 @@ jobs:
       - name: Extract Jira issue keys from commits
         id: issues
         run: |
-          # Get all commits since last tag (or all commits if no tag)
           LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
           if [ -n "$LAST_TAG" ]; then
             COMMITS=$(git log "${LAST_TAG}..HEAD" --pretty=format:'%s %b')
@@ -61,31 +66,32 @@ jobs:
           JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
           JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
         run: |
-          REPO="${{ github.repository }}"
-
-          PRODUCTION_TRANSITION_ID="51"
-
           for KEY in ${{ steps.issues.outputs.keys }}; do
             echo "Processing ${KEY}..."
 
-            # Transition to Production
-            curl -s -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
+            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+              -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
               -H "Content-Type: application/json" \
               -X POST \
               "${JIRA_BASE_URL}/rest/api/3/issue/${KEY}/transitions" \
-              -d "{\"transition\":{\"id\":\"${PRODUCTION_TRANSITION_ID}\"}}"
+              -d "{\"transition\":{\"id\":\"${PRODUCTION_TRANSITION_ID}\"}}")
+
+            if [ "$HTTP_CODE" = "204" ]; then
+              echo "  -> ${KEY} transitioned to Production"
+            else
+              echo "  -> ${KEY} transition failed (HTTP ${HTTP_CODE})"
+            fi
 
             # Add deployment comment
-            curl -s -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
+            curl -s -o /dev/null \
+              -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
               -H "Content-Type: application/json" \
               -X POST \
               "${JIRA_BASE_URL}/rest/api/3/issue/${KEY}/comment" \
-              -d "{\"body\":{\"type\":\"doc\",\"version\":1,\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"Deployed to Production (${SHORT_SHA})\"},{\"type\":\"hardBreak\"},{\"type\":\"text\",\"text\":\"Repo: ${REPO}\"}]}]}}"
-
-            echo "  -> ${KEY} transitioned to Production"
+              -d "{\"body\":{\"type\":\"doc\",\"version\":1,\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"Deployed to Production (${SHORT_SHA})\"},{\"type\":\"hardBreak\"},{\"type\":\"text\",\"text\":\"Repo: ${{ github.repository }}\"}]}]}}"
           done
 
-          echo "### Jira Issues in Production" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Jira Issues → Production" >> "$GITHUB_STEP_SUMMARY"
           echo "Issues: ${{ steps.issues.outputs.keys }}" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Create Jira Release
@@ -97,9 +103,7 @@ jobs:
           JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
         run: |
           VERSION_NAME="${RELEASE_TAG}"
-          PROJECT_ID="10208"
 
-          # Create Jira version
           VERSION_RESPONSE=$(curl -s -w "\n%{http_code}" \
             -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
             -H "Content-Type: application/json" \
@@ -107,7 +111,7 @@ jobs:
             "${JIRA_BASE_URL}/rest/api/3/version" \
             -d "{
               \"name\": \"${VERSION_NAME}\",
-              \"projectId\": ${PROJECT_ID},
+              \"projectId\": ${JIRA_PROJECT_ID},
               \"released\": true,
               \"releaseDate\": \"${RELEASE_DATE}\",
               \"description\": \"Automated release from GitHub Actions run #${{ github.run_number }}\"
@@ -135,7 +139,8 @@ jobs:
           VERSION_NAME="${{ steps.jira_release.outputs.version_name }}"
 
           for KEY in ${{ steps.issues.outputs.keys }}; do
-            curl -s -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
+            curl -s -o /dev/null \
+              -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
               -H "Content-Type: application/json" \
               -X PUT \
               "${JIRA_BASE_URL}/rest/api/3/issue/${KEY}" \
@@ -151,19 +156,22 @@ jobs:
           JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
           JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
         run: |
-          DONE_TRANSITION_ID="31"
-
           for KEY in ${{ steps.issues.outputs.keys }}; do
-            curl -s -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
+            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+              -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
               -H "Content-Type: application/json" \
               -X POST \
               "${JIRA_BASE_URL}/rest/api/3/issue/${KEY}/transitions" \
-              -d "{\"transition\":{\"id\":\"${DONE_TRANSITION_ID}\"}}"
+              -d "{\"transition\":{\"id\":\"${DONE_TRANSITION_ID}\"}}")
 
-            echo "  -> ${KEY} transitioned to Done"
+            if [ "$HTTP_CODE" = "204" ]; then
+              echo "  -> ${KEY} transitioned to Done"
+            else
+              echo "  -> ${KEY} Done transition failed (HTTP ${HTTP_CODE})"
+            fi
           done
 
-          echo "### Jira Issues marked Done" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Jira Issues → Done" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Collect merged PRs since last release
         id: prs
@@ -173,7 +181,6 @@ jobs:
           LAST_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
 
           if [ -n "$LAST_TAG" ]; then
-            # Get tag timestamp as Unix epoch then convert to UTC ISO format
             TAG_EPOCH=$(git log -1 --format=%at "$LAST_TAG")
             SINCE_DATE=$(date -u -d "@${TAG_EPOCH}" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -r "${TAG_EPOCH}" +%Y-%m-%dT%H:%M:%SZ)
           else
@@ -181,22 +188,23 @@ jobs:
           fi
           echo "Collecting PRs since: ${SINCE_DATE} (tag: ${LAST_TAG})"
 
-          # Get feature PRs merged to develop since last release (these are the actual work)
+          # Feature PRs merged to develop
           DEVELOP_PRS=$(gh pr list --base develop --state merged --limit 100 \
             --json number,title,author,mergedAt,headRefName \
             --jq "[.[] | select(.mergedAt > \"${SINCE_DATE}\")]")
 
-          # Also get feature PRs merged directly to master (not from develop)
-          MAIN_PRS=$(gh pr list --base master --state merged --limit 100 \
+          # Feature PRs merged directly to master (not from develop)
+          MASTER_PRS=$(gh pr list --base master --state merged --limit 100 \
             --json number,title,author,mergedAt,headRefName \
             --jq "[.[] | select(.mergedAt > \"${SINCE_DATE}\" and .headRefName != \"develop\")]")
 
-          # Combine and deduplicate by PR number
-          PR_JSON=$(echo "${DEVELOP_PRS}${MAIN_PRS}" | jq -s 'add | unique_by(.number) | sort_by(.mergedAt)')
+          # Combine and deduplicate
+          PR_JSON=$(echo "${DEVELOP_PRS}${MASTER_PRS}" | jq -s 'add | unique_by(.number) | sort_by(.mergedAt)')
 
-          echo "Found $(echo "$PR_JSON" | jq 'length') PRs"
+          PR_COUNT=$(echo "$PR_JSON" | jq 'length')
+          echo "Found ${PR_COUNT} PRs"
 
-          # Build grouped notes by author
+          # Group by author
           AUTHORS=$(echo "$PR_JSON" | jq -r '.[].author.login' | sort -u)
 
           GROUPED_NOTES=""
@@ -205,7 +213,6 @@ jobs:
             GROUPED_NOTES+="### @${AUTHOR}\n"
             while IFS='|' read -r NUM TITLE BRANCH; do
               GROUPED_NOTES+="- #${NUM} ${TITLE}"
-              # Extract Jira key from branch name
               JIRA_KEY=$(echo "$BRANCH" | grep -oE '[A-Z]+-[0-9]+' | head -1)
               if [ -n "$JIRA_KEY" ]; then
                 GROUPED_NOTES+=" (${JIRA_KEY})"
@@ -216,7 +223,6 @@ jobs:
             GROUPED_NOTES+="\n"
           done
 
-          # Save for later steps
           echo "grouped_notes<<EOFNOTES" >> "$GITHUB_OUTPUT"
           echo -e "$GROUPED_NOTES" >> "$GITHUB_OUTPUT"
           echo "EOFNOTES" >> "$GITHUB_OUTPUT"
@@ -225,28 +231,26 @@ jobs:
           echo -e "$PR_SUMMARY" >> "$GITHUB_OUTPUT"
           echo "EOFSUMMARY" >> "$GITHUB_OUTPUT"
 
-          PR_COUNT=$(echo "$PR_JSON" | jq 'length')
           AUTHOR_COUNT=$(echo "$AUTHORS" | wc -w | tr -d ' ')
           echo "pr_count=${PR_COUNT}" >> "$GITHUB_OUTPUT"
           echo "author_count=${AUTHOR_COUNT}" >> "$GITHUB_OUTPUT"
 
-      - name: Create GitHub release
+      - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
         run: |
           KEYS="${{ steps.issues.outputs.keys }}"
 
-          NOTES="## 📦 Release Summary\n\n"
+          NOTES="## Release Summary\n\n"
           NOTES+="**PRs:** ${{ steps.prs.outputs.pr_count }} | **Contributors:** ${{ steps.prs.outputs.author_count }}\n\n"
-
-          NOTES+="## 👥 Changes by Developer\n\n"
+          NOTES+="## Changes by Developer\n\n"
           NOTES+="${{ steps.prs.outputs.grouped_notes }}\n"
 
           if [ -n "$KEYS" ]; then
-            NOTES+="## 🎫 Jira Issues\n\n"
+            NOTES+="## Jira Issues\n\n"
             for KEY in $KEYS; do
-              NOTES+="- [${KEY}](${JIRA_BASE_URL:-https://cobay.atlassian.net}/browse/${KEY})\n"
+              NOTES+="- [${KEY}](${JIRA_BASE_URL}/browse/${KEY})\n"
             done
           fi
 
@@ -260,43 +264,41 @@ jobs:
             --notes "$(echo -e "$NOTES")" \
             --latest
 
-          echo "### Release Created" >> "$GITHUB_STEP_SUMMARY"
+          echo "### GitHub Release Created" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Tag:** ${RELEASE_TAG}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **PRs included:** ${{ steps.prs.outputs.pr_count }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **PRs:** ${{ steps.prs.outputs.pr_count }}" >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Notify Slack releases-test channel
+      - name: Notify Slack - Production release
         if: always()
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.RELEASE_SLACK_WEBHOOK_URL }}
           JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
         run: |
-          TAG="${RELEASE_TAG}"
           IST_TIME=$(TZ='Asia/Kolkata' date "+%b %d, %Y %I:%M %p IST")
           UTC_TIME=$(date -u "+%b %d, %Y %I:%M %p UTC")
           KEYS="${{ steps.issues.outputs.keys }}"
           STATUS="${{ job.status }}"
 
           if [ "$STATUS" = "success" ]; then
-            HEADER="🚀  Release Deployed to Production"
+            HEADER="Release Deployed to Production"
             STATUS_TEXT="SUCCESS"
-            URGENCY="✅  *Deployment completed successfully!*"
+            URGENCY="Deployment completed successfully!"
           else
-            HEADER="⚠️  Release Deployment Failed"
+            HEADER="Release Deployment Failed"
             STATUS_TEXT="FAILED"
-            URGENCY="🔴  *Deployment encountered errors. Check GitHub Actions.*"
+            URGENCY="Deployment encountered errors. Check GitHub Actions."
           fi
 
           # Build Jira links
           JIRA_LINKS=""
           if [ -n "$KEYS" ]; then
             for KEY in $KEYS; do
-              JIRA_LINKS+="<${JIRA_BASE_URL:-https://cobay.atlassian.net}/browse/${KEY}|${KEY}> "
+              JIRA_LINKS+="<${JIRA_BASE_URL}/browse/${KEY}|${KEY}> "
             done
           else
             JIRA_LINKS="None"
           fi
 
-          # Build PR summary for Slack
           PR_COUNT="${{ steps.prs.outputs.pr_count }}"
           AUTHOR_COUNT="${{ steps.prs.outputs.author_count }}"
           PR_SUMMARY="${{ steps.prs.outputs.pr_summary }}"
@@ -318,19 +320,19 @@ jobs:
                   \"type\": \"section\",
                   \"text\": {
                     \"type\": \"mrkdwn\",
-                    \"text\": \"${URGENCY}\"
+                    \"text\": \"*${URGENCY}*\"
                   }
                 },
                 {\"type\": \"divider\"},
                 {
                   \"type\": \"section\",
                   \"fields\": [
-                    {\"type\": \"mrkdwn\", \"text\": \"*📦 Repository:*\n<https://github.com/${{ github.repository }}|${{ github.repository }}>\"},
-                    {\"type\": \"mrkdwn\", \"text\": \"*🏷️ Tag:*\n\`${TAG}\`\"},
-                    {\"type\": \"mrkdwn\", \"text\": \"*🔀 Commit:*\n\`${SHORT_SHA}\`\"},
-                    {\"type\": \"mrkdwn\", \"text\": \"*👤 Triggered by:*\n${{ github.actor }}\"},
-                    {\"type\": \"mrkdwn\", \"text\": \"*🔔 Status:*\n\`${STATUS_TEXT}\`\"},
-                    {\"type\": \"mrkdwn\", \"text\": \"*🎫 Jira Issues:*\n${JIRA_LINKS}\"}
+                    {\"type\": \"mrkdwn\", \"text\": \"*Repository:*\n<https://github.com/${{ github.repository }}|${{ github.repository }}>\"},
+                    {\"type\": \"mrkdwn\", \"text\": \"*Tag:*\n\`${RELEASE_TAG}\`\"},
+                    {\"type\": \"mrkdwn\", \"text\": \"*Commit:*\n\`${SHORT_SHA}\`\"},
+                    {\"type\": \"mrkdwn\", \"text\": \"*Triggered by:*\n${{ github.actor }}\"},
+                    {\"type\": \"mrkdwn\", \"text\": \"*Status:*\n\`${STATUS_TEXT}\`\"},
+                    {\"type\": \"mrkdwn\", \"text\": \"*Jira Issues:*\n${JIRA_LINKS}\"}
                   ]
                 },
                 {\"type\": \"divider\"},
@@ -338,7 +340,7 @@ jobs:
                   \"type\": \"section\",
                   \"text\": {
                     \"type\": \"mrkdwn\",
-                    \"text\": \"*📋 Release Summary: ${PR_COUNT} PRs from ${AUTHOR_COUNT} contributors*\n\n${PR_SUMMARY}\"
+                    \"text\": \"*Release Summary: ${PR_COUNT} PRs from ${AUTHOR_COUNT} contributors*\n\n${PR_SUMMARY}\"
                   }
                 },
                 {\"type\": \"divider\"},
@@ -347,14 +349,14 @@ jobs:
                   \"elements\": [
                     {
                       \"type\": \"mrkdwn\",
-                      \"text\": \"⏰ *${IST_TIME}*  |  🌐 *${UTC_TIME}*  |  🔢 *Run #${{ github.run_number }}*\"
+                      \"text\": \"${IST_TIME}  |  ${UTC_TIME}  |  Run #${{ github.run_number }}\"
                     }
                   ]
                 },
                 {
                   \"type\": \"actions\",
                   \"elements\": [
-                    {\"type\": \"button\", \"text\": {\"type\": \"plain_text\", \"text\": \"GitHub Release\"}, \"url\": \"https://github.com/${{ github.repository }}/releases/tag/${TAG}\"}
+                    {\"type\": \"button\", \"text\": {\"type\": \"plain_text\", \"text\": \"GitHub Release\"}, \"url\": \"https://github.com/${{ github.repository }}/releases/tag/${RELEASE_TAG}\"}
                   ]
                 }
               ]

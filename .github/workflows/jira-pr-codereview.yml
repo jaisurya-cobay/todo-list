@@ -1,15 +1,19 @@
-name: PR Opened - Jira Code Review
+name: Jira - PR Opened → Code Review
 
 on:
   pull_request:
     types: [opened, reopened]
     branches: [develop]
 
+concurrency:
+  group: jira-codereview-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 jobs:
   transition-to-code-review:
     runs-on: ubuntu-latest
     steps:
-      - name: Extract Jira issue keys from PR
+      - name: Extract Jira issue keys
         id: issues
         env:
           PR_TITLE: ${{ github.event.pull_request.title }}
@@ -34,32 +38,38 @@ jobs:
           JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
           JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
           JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
-          PR_NUM: ${{ github.event.pull_request.number }}
-          PR_TITLE: ${{ github.event.pull_request.title }}
-          PR_URL: ${{ github.event.pull_request.html_url }}
-          AUTHOR: ${{ github.event.pull_request.user.login }}
+          CODE_REVIEW_TRANSITION_ID: ${{ vars.JIRA_TRANSITION_CODE_REVIEW || '61' }}
         run: |
-          CODE_REVIEW_TRANSITION_ID="61"
+          PR_NUM="${{ github.event.pull_request.number }}"
+          PR_TITLE="${{ github.event.pull_request.title }}"
+          PR_URL="${{ github.event.pull_request.html_url }}"
+          AUTHOR="${{ github.event.pull_request.user.login }}"
 
           for KEY in ${{ steps.issues.outputs.keys }}; do
             echo "Processing ${KEY}..."
 
             # Transition to Code Review
-            curl -s -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
+            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+              -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
               -H "Content-Type: application/json" \
               -X POST \
               "${JIRA_BASE_URL}/rest/api/3/issue/${KEY}/transitions" \
-              -d "{\"transition\":{\"id\":\"${CODE_REVIEW_TRANSITION_ID}\"}}"
+              -d "{\"transition\":{\"id\":\"${CODE_REVIEW_TRANSITION_ID}\"}}")
 
-            # Add PR comment
-            curl -s -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
+            if [ "$HTTP_CODE" = "204" ]; then
+              echo "  -> ${KEY} transitioned to Code Review"
+            else
+              echo "  -> ${KEY} transition failed (HTTP ${HTTP_CODE})"
+            fi
+
+            # Add PR link comment
+            curl -s -o /dev/null \
+              -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
               -H "Content-Type: application/json" \
               -X POST \
               "${JIRA_BASE_URL}/rest/api/3/issue/${KEY}/comment" \
-              -d "{\"body\":{\"type\":\"doc\",\"version\":1,\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"PR #${PR_NUM} opened by ${AUTHOR}\"},{\"type\":\"hardBreak\"},{\"type\":\"text\",\"text\":\"Title: ${PR_TITLE}\"},{\"type\":\"hardBreak\"},{\"type\":\"text\",\"text\":\"URL: ${PR_URL}\"},{\"type\":\"hardBreak\"},{\"type\":\"text\",\"text\":\"Moved to Code Review\"}]}]}}"
-
-            echo "  -> ${KEY} transitioned to Code Review"
+              -d "{\"body\":{\"type\":\"doc\",\"version\":1,\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"PR #${PR_NUM} opened by ${AUTHOR}\"},{\"type\":\"hardBreak\"},{\"type\":\"text\",\"text\":\"Title: ${PR_TITLE}\"},{\"type\":\"hardBreak\"},{\"type\":\"text\",\"text\":\"URL: ${PR_URL}\"},{\"type\":\"hardBreak\"},{\"type\":\"text\",\"text\":\"Status: Code Review\"}]}]}}"
           done
 
-          echo "### Jira Issues Moved to Code Review" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Jira Issues → Code Review" >> "$GITHUB_STEP_SUMMARY"
           echo "Issues: ${{ steps.issues.outputs.keys }}" >> "$GITHUB_STEP_SUMMARY"

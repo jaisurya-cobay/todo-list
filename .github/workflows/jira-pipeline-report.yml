@@ -15,22 +15,22 @@ jobs:
       JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
       JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
       JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+      JIRA_PROJECT_KEY: ${{ vars.JIRA_PROJECT_KEY || 'XPRMNTS' }}
     steps:
       - name: Current pipeline snapshot
         run: |
           echo "# Jira Pipeline Report - $(date +%Y-%m-%d)" > report.md
           echo "" >> report.md
-
           echo "## Current Board Snapshot" >> report.md
           echo "" >> report.md
           echo "| Status | Count | Tickets |" >> report.md
           echo "|--------|-------|---------|" >> report.md
 
-          for STATUS in "To Do" "In Progress" "QA" "Prod" "Done"; do
+          for STATUS in "To Do" "In Progress" "Code Review" "Staging" "Production" "Done"; do
             ENCODED=$(echo "$STATUS" | sed 's/ /%20/g')
             RESPONSE=$(curl -s -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
               -H "Content-Type: application/json" \
-              "${JIRA_BASE_URL}/rest/api/3/search?jql=project%3DXPRMNTS%20AND%20status%3D%22${ENCODED}%22&fields=summary,assignee&maxResults=50")
+              "${JIRA_BASE_URL}/rest/api/3/search?jql=project%3D${JIRA_PROJECT_KEY}%20AND%20status%3D%22${ENCODED}%22&fields=summary,assignee&maxResults=50")
 
             COUNT=$(echo "$RESPONSE" | jq '.total // 0')
             TICKETS=$(echo "$RESPONSE" | jq -r '[.issues[] | "\(.key): \(.fields.summary)"] | join(", ")' 2>/dev/null || echo "")
@@ -48,49 +48,27 @@ jobs:
         run: |
           echo "## Weekly Throughput (Last 7 Days)" >> report.md
           echo "" >> report.md
-
-          # Tickets moved to In Progress this week
-          IN_PROGRESS=$(curl -s -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
-            -H "Content-Type: application/json" \
-            "${JIRA_BASE_URL}/rest/api/3/search?jql=project%3DXPRMNTS%20AND%20status%20changed%20to%20%22In%20Progress%22%20after%20-7d&fields=summary&maxResults=50")
-          IP_COUNT=$(echo "$IN_PROGRESS" | jq '.total // 0')
-          IP_KEYS=$(echo "$IN_PROGRESS" | jq -r '[.issues[].key] | join(", ")' 2>/dev/null || echo "-")
-
-          # Tickets moved to QA this week
-          QA=$(curl -s -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
-            -H "Content-Type: application/json" \
-            "${JIRA_BASE_URL}/rest/api/3/search?jql=project%3DXPRMNTS%20AND%20status%20changed%20to%20%22QA%22%20after%20-7d&fields=summary&maxResults=50")
-          QA_COUNT=$(echo "$QA" | jq '.total // 0')
-          QA_KEYS=$(echo "$QA" | jq -r '[.issues[].key] | join(", ")' 2>/dev/null || echo "-")
-
-          # Tickets moved to Prod this week
-          PROD=$(curl -s -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
-            -H "Content-Type: application/json" \
-            "${JIRA_BASE_URL}/rest/api/3/search?jql=project%3DXPRMNTS%20AND%20status%20changed%20to%20%22Prod%22%20after%20-7d&fields=summary&maxResults=50")
-          PROD_COUNT=$(echo "$PROD" | jq '.total // 0')
-          PROD_KEYS=$(echo "$PROD" | jq -r '[.issues[].key] | join(", ")' 2>/dev/null || echo "-")
-
-          # Tickets moved to Done this week
-          DONE=$(curl -s -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
-            -H "Content-Type: application/json" \
-            "${JIRA_BASE_URL}/rest/api/3/search?jql=project%3DXPRMNTS%20AND%20status%20changed%20to%20%22Done%22%20after%20-7d&fields=summary&maxResults=50")
-          DONE_COUNT=$(echo "$DONE" | jq '.total // 0')
-          DONE_KEYS=$(echo "$DONE" | jq -r '[.issues[].key] | join(", ")' 2>/dev/null || echo "-")
-
-          # Tickets created this week
-          CREATED=$(curl -s -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
-            -H "Content-Type: application/json" \
-            "${JIRA_BASE_URL}/rest/api/3/search?jql=project%3DXPRMNTS%20AND%20created%20>%3D%20-7d&fields=summary&maxResults=50")
-          CREATED_COUNT=$(echo "$CREATED" | jq '.total // 0')
-          CREATED_KEYS=$(echo "$CREATED" | jq -r '[.issues[].key] | join(", ")' 2>/dev/null || echo "-")
-
           echo "| Transition | Count | Tickets |" >> report.md
           echo "|-----------|-------|---------|" >> report.md
+
+          for STATUS in "In Progress" "Code Review" "Staging" "Production" "Done"; do
+            ENCODED=$(echo "$STATUS" | sed 's/ /%20/g')
+            RESPONSE=$(curl -s -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
+              -H "Content-Type: application/json" \
+              "${JIRA_BASE_URL}/rest/api/3/search?jql=project%3D${JIRA_PROJECT_KEY}%20AND%20status%20changed%20to%20%22${ENCODED}%22%20after%20-7d&fields=summary&maxResults=50")
+
+            COUNT=$(echo "$RESPONSE" | jq '.total // 0')
+            KEYS=$(echo "$RESPONSE" | jq -r '[.issues[].key] | join(", ")' 2>/dev/null || echo "-")
+            echo "| → ${STATUS} | ${COUNT} | ${KEYS} |" >> report.md
+          done
+
+          # Created this week
+          CREATED=$(curl -s -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
+            -H "Content-Type: application/json" \
+            "${JIRA_BASE_URL}/rest/api/3/search?jql=project%3D${JIRA_PROJECT_KEY}%20AND%20created%20>%3D%20-7d&fields=summary&maxResults=50")
+          CREATED_COUNT=$(echo "$CREATED" | jq '.total // 0')
+          CREATED_KEYS=$(echo "$CREATED" | jq -r '[.issues[].key] | join(", ")' 2>/dev/null || echo "-")
           echo "| Created (new) | ${CREATED_COUNT} | ${CREATED_KEYS} |" >> report.md
-          echo "| -> In Progress | ${IP_COUNT} | ${IP_KEYS} |" >> report.md
-          echo "| -> QA | ${QA_COUNT} | ${QA_KEYS} |" >> report.md
-          echo "| -> Prod | ${PROD_COUNT} | ${PROD_KEYS} |" >> report.md
-          echo "| -> Done | ${DONE_COUNT} | ${DONE_KEYS} |" >> report.md
           echo "" >> report.md
 
       - name: Cycle time analysis
@@ -98,10 +76,9 @@ jobs:
           echo "## Cycle Time (Completed Last 7 Days)" >> report.md
           echo "" >> report.md
 
-          # Get tickets that reached Done in last 7 days with their changelog
           DONE_ISSUES=$(curl -s -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
             -H "Content-Type: application/json" \
-            "${JIRA_BASE_URL}/rest/api/3/search?jql=project%3DXPRMNTS%20AND%20status%20changed%20to%20%22Done%22%20after%20-7d&fields=summary,created&maxResults=50&expand=changelog")
+            "${JIRA_BASE_URL}/rest/api/3/search?jql=project%3D${JIRA_PROJECT_KEY}%20AND%20status%20changed%20to%20%22Done%22%20after%20-7d&fields=summary,created&maxResults=50&expand=changelog")
 
           ISSUE_COUNT=$(echo "$DONE_ISSUES" | jq '.total // 0')
 
@@ -136,22 +113,23 @@ jobs:
           echo "## Bottleneck Alert" >> report.md
           echo "" >> report.md
 
-          # Check for tickets stuck in a status for more than 3 days
-          for STATUS in "In Progress" "QA" "Prod"; do
+          BOTTLENECK_FOUND=false
+
+          for STATUS in "In Progress" "Code Review" "Staging" "Production"; do
             ENCODED=$(echo "$STATUS" | sed 's/ /%20/g')
             STUCK=$(curl -s -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
               -H "Content-Type: application/json" \
-              "${JIRA_BASE_URL}/rest/api/3/search?jql=project%3DXPRMNTS%20AND%20status%3D%22${ENCODED}%22%20AND%20status%20changed%20to%20%22${ENCODED}%22%20before%20-3d&fields=summary,assignee&maxResults=50")
+              "${JIRA_BASE_URL}/rest/api/3/search?jql=project%3D${JIRA_PROJECT_KEY}%20AND%20status%3D%22${ENCODED}%22%20AND%20status%20changed%20to%20%22${ENCODED}%22%20before%20-3d&fields=summary,assignee&maxResults=50")
 
             STUCK_COUNT=$(echo "$STUCK" | jq '.total // 0')
             if [ "$STUCK_COUNT" -gt 0 ]; then
               STUCK_KEYS=$(echo "$STUCK" | jq -r '[.issues[] | "\(.key) (\(.fields.assignee.displayName // "unassigned"))"] | join(", ")' 2>/dev/null || echo "")
               echo "- **${STATUS}** (${STUCK_COUNT} stuck >3 days): ${STUCK_KEYS}" >> report.md
+              BOTTLENECK_FOUND=true
             fi
           done
 
-          # Check if nothing was flagged
-          if ! grep -q "stuck" report.md; then
+          if [ "$BOTTLENECK_FOUND" = "false" ]; then
             echo "No bottlenecks detected." >> report.md
           fi
 
