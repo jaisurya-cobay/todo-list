@@ -1,9 +1,8 @@
 name: Jira - Subtask Status Automation
 
-# Subtask status auto-move based on commit keywords and PR events
+# Subtask status auto-move based on commits and PR events
 # Developer commit convention:
-#   "PROJ-XX started ..." → To Do → In Progress
-#   "PROJ-XX completed ..." → In Progress → Code Review
+#   "PROJ-XX ..." → any commit with ticket ID → Code Review
 # PR merge to master → all subtasks → Staging
 # Production deploy (manual) → subtasks → Production → Done
 
@@ -40,44 +39,41 @@ jobs:
           JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
           JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
           JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
-          IN_PROGRESS_TRANSITION_ID: ${{ vars.JIRA_TRANSITION_IN_PROGRESS || '21' }}
           CODE_REVIEW_TRANSITION_ID: ${{ vars.JIRA_TRANSITION_CODE_REVIEW || '61' }}
         run: |
-          move_issue() {
-            local KEY=$1
-            local TARGET_STATUS=$2
-            local TRANSITION_ID=$3
+          COMMITS='${{ toJSON(github.event.commits.*.message) }}'
+
+          # Collect all unique Jira keys from all commits
+          KEYS=$(echo "$COMMITS" | jq -r '.[]' | grep -oE '[A-Z]+-[0-9]+' | sort -u)
+
+          if [ -z "$KEYS" ]; then
+            echo "No Jira keys found in commits, skipping"
+            exit 0
+          fi
+
+          echo "$KEYS" | while read KEY; do
+            echo "--- Checking $KEY ---"
+
+            # Verify issue is a subtask before transitioning
+            ISSUE_TYPE=$(curl -s -u "$JIRA_EMAIL:$JIRA_API_TOKEN" \
+              "$JIRA_BASE_URL/rest/api/3/issue/$KEY?fields=issuetype" \
+              | jq -r '.fields.issuetype.subtask // false')
+
+            if [ "$ISSUE_TYPE" != "true" ]; then
+              echo "  -> $KEY is not a subtask, skipping"
+              continue
+            fi
 
             HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
               -u "$JIRA_EMAIL:$JIRA_API_TOKEN" \
               -H "Content-Type: application/json" \
-              -d "{\"transition\":{\"id\":\"$TRANSITION_ID\"}}" \
+              -d "{\"transition\":{\"id\":\"$CODE_REVIEW_TRANSITION_ID\"}}" \
               "$JIRA_BASE_URL/rest/api/3/issue/$KEY/transitions")
 
             if [ "$HTTP_CODE" = "204" ]; then
-              echo "  -> $KEY → $TARGET_STATUS"
+              echo "  -> $KEY → Code Review ✓"
             else
               echo "  -> $KEY failed (HTTP $HTTP_CODE)"
-            fi
-          }
-
-          COMMITS='${{ toJSON(github.event.commits.*.message) }}'
-
-          echo "$COMMITS" | jq -r '.[]' | while IFS= read -r MSG; do
-            echo "--- Commit: $MSG ---"
-
-            KEY=$(echo "$MSG" | grep -oE '[A-Z]+-[0-9]+' | head -1)
-            if [ -z "$KEY" ]; then
-              echo "  No Jira key found, skipping"
-              continue
-            fi
-
-            if echo "$MSG" | grep -qi "started"; then
-              move_issue "$KEY" "In Progress" "$IN_PROGRESS_TRANSITION_ID"
-            fi
-
-            if echo "$MSG" | grep -qi "completed"; then
-              move_issue "$KEY" "Code Review" "$CODE_REVIEW_TRANSITION_ID"
             fi
           done
 
