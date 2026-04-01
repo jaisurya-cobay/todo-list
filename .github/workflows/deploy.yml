@@ -30,39 +30,6 @@ jobs:
           echo "RELEASE_DATE=$(date +%Y-%m-%d)" >> "$GITHUB_ENV"
           echo "SHORT_SHA=${GITHUB_SHA:0:7}" >> "$GITHUB_ENV"
 
-          # Find latest semver tag
-          LATEST_TAG=$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -1)
-
-          if [ -z "$LATEST_TAG" ]; then
-            MAJOR=1; MINOR=0; PATCH=0
-            echo "No semver tag found, starting at v1.0.0"
-          else
-            echo "Latest semver tag: ${LATEST_TAG}"
-            VERSION="${LATEST_TAG#v}"
-            MAJOR=$(echo "$VERSION" | cut -d. -f1)
-            MINOR=$(echo "$VERSION" | cut -d. -f2)
-            PATCH=$(echo "$VERSION" | cut -d. -f3)
-          fi
-
-          # Detect bump type from merge commit / PR title
-          MERGE_MSG=$(git log -1 --pretty=format:'%s %b')
-          echo "Merge message: ${MERGE_MSG}"
-
-          if echo "$MERGE_MSG" | grep -qiE '\[major\]|BREAKING CHANGE'; then
-            MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0
-            echo "Bump: MAJOR"
-          elif echo "$MERGE_MSG" | grep -qiE '\[minor\]|feat|feature|enhancement'; then
-            MINOR=$((MINOR + 1)); PATCH=0
-            echo "Bump: MINOR"
-          else
-            PATCH=$((PATCH + 1))
-            echo "Bump: PATCH"
-          fi
-
-          RELEASE_TAG="v${MAJOR}.${MINOR}.${PATCH}"
-          echo "RELEASE_TAG=${RELEASE_TAG}" >> "$GITHUB_ENV"
-          echo "Release version: ${RELEASE_TAG}"
-
       - name: Build
         run: echo "Building..."
 
@@ -163,12 +130,17 @@ jobs:
           done
 
           if [ -n "$VERSION_IDS" ]; then
+            FIRST_VERSION=$(echo "$VERSION_NAMES" | cut -d',' -f1 | xargs)
             echo "Collected fix versions: ${VERSION_NAMES}"
+            echo "Using Jira version as release tag: ${FIRST_VERSION}"
+            echo "RELEASE_TAG=${FIRST_VERSION}" >> "$GITHUB_ENV"
             echo "version_ids=${VERSION_IDS}" >> "$GITHUB_OUTPUT"
             echo "version_names=${VERSION_NAMES}" >> "$GITHUB_OUTPUT"
             echo "found_versions=true" >> "$GITHUB_OUTPUT"
           else
-            echo "::warning::No fix versions found on any issues"
+            FALLBACK_TAG="release-${RELEASE_DATE}-${SHORT_SHA}"
+            echo "::warning::No fix versions found on any issues, using fallback tag: ${FALLBACK_TAG}"
+            echo "RELEASE_TAG=${FALLBACK_TAG}" >> "$GITHUB_ENV"
             echo "found_versions=false" >> "$GITHUB_OUTPUT"
           fi
 
@@ -201,6 +173,47 @@ jobs:
 
           echo "### Jira Releases Marked as Released" >> "$GITHUB_STEP_SUMMARY"
           echo "Versions: ${{ steps.jira_release.outputs.version_names }}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Collect subtasks from Jira release
+        if: steps.jira_release.outputs.found_versions == 'true'
+        id: release_issues
+        env:
+          JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
+          JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
+          JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+        run: |
+          VERSION_NAMES="${{ steps.jira_release.outputs.version_names }}"
+          FIRST_VERSION=$(echo "$VERSION_NAMES" | cut -d',' -f1 | xargs)
+
+          JQL=$(python3 -c "import urllib.parse; print(urllib.parse.quote('fixVersion = \"${FIRST_VERSION}\" ORDER BY issuetype ASC, key ASC'))")
+
+          RESPONSE=$(curl -s \
+            -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
+            -H "Content-Type: application/json" \
+            "${JIRA_BASE_URL}/rest/api/3/search?jql=${JQL}&fields=summary,issuetype,status,assignee&maxResults=100")
+
+          TOTAL=$(echo "$RESPONSE" | jq '.total // 0')
+          echo "Found ${TOTAL} issues in release ${FIRST_VERSION}"
+
+          ISSUE_LIST=""
+          ISSUE_SUMMARY=""
+          if [ "$TOTAL" -gt 0 ]; then
+            while IFS='|' read -r KEY SUMMARY TYPE ASSIGNEE; do
+              [ -z "$KEY" ] && continue
+              ISSUE_LIST+="- [${KEY}](${JIRA_BASE_URL}/browse/${KEY}) ${SUMMARY} (${TYPE}, ${ASSIGNEE})\n"
+              ISSUE_SUMMARY+="• <${JIRA_BASE_URL}/browse/${KEY}|${KEY}> ${SUMMARY} (${ASSIGNEE})\n"
+            done < <(echo "$RESPONSE" | jq -r '.issues[] | "\(.key)|\(.fields.summary)|\(.fields.issuetype.name)|\(.fields.assignee.displayName // "unassigned")"')
+          fi
+
+          echo "release_issue_count=${TOTAL}" >> "$GITHUB_OUTPUT"
+
+          echo "release_issues_md<<EOFISSUES" >> "$GITHUB_OUTPUT"
+          echo -e "$ISSUE_LIST" >> "$GITHUB_OUTPUT"
+          echo "EOFISSUES" >> "$GITHUB_OUTPUT"
+
+          echo "release_issues_slack<<EOFSLACK" >> "$GITHUB_OUTPUT"
+          echo -e "$ISSUE_SUMMARY" >> "$GITHUB_OUTPUT"
+          echo "EOFSLACK" >> "$GITHUB_OUTPUT"
 
       - name: Transition issues to Done
         if: steps.issues.outputs.found == 'true'
@@ -296,17 +309,25 @@ jobs:
           KEYS="${{ steps.issues.outputs.keys }}"
 
           JIRA_VERSIONS="${{ steps.jira_release.outputs.version_names }}"
+          RELEASE_ISSUE_COUNT="${{ steps.release_issues.outputs.release_issue_count }}"
 
           NOTES="## Release Summary\n\n"
           NOTES+="**PRs:** ${{ steps.prs.outputs.pr_count }} | **Contributors:** ${{ steps.prs.outputs.author_count }}"
           if [ -n "$JIRA_VERSIONS" ]; then
             NOTES+=" | **Jira Release:** ${JIRA_VERSIONS}"
           fi
+          if [ -n "$RELEASE_ISSUE_COUNT" ] && [ "$RELEASE_ISSUE_COUNT" -gt 0 ] 2>/dev/null; then
+            NOTES+=" | **Issues:** ${RELEASE_ISSUE_COUNT}"
+          fi
           NOTES+="\n\n"
           NOTES+="## Changes by Developer\n\n"
           NOTES+="${{ steps.prs.outputs.grouped_notes }}\n"
 
-          if [ -n "$KEYS" ]; then
+          RELEASE_ISSUES_MD="${{ steps.release_issues.outputs.release_issues_md }}"
+          if [ -n "$RELEASE_ISSUES_MD" ]; then
+            NOTES+="## Release Contents (${JIRA_VERSIONS})\n\n"
+            NOTES+="${RELEASE_ISSUES_MD}\n"
+          elif [ -n "$KEYS" ]; then
             NOTES+="## Jira Issues\n\n"
             for KEY in $KEYS; do
               NOTES+="- [${KEY}](${JIRA_BASE_URL}/browse/${KEY})\n"
@@ -361,12 +382,12 @@ jobs:
           PR_COUNT="${{ steps.prs.outputs.pr_count }}"
           AUTHOR_COUNT="${{ steps.prs.outputs.author_count }}"
           PR_SUMMARY="${{ steps.prs.outputs.pr_summary }}"
-          JIRA_VERSIONS="${{ steps.jira_release.outputs.version_names }}"
+          RELEASE_ISSUES_SLACK="${{ steps.release_issues.outputs.release_issues_slack }}"
           if [ -z "$PR_SUMMARY" ]; then
             PR_SUMMARY="No PRs found"
           fi
-          if [ -z "$JIRA_VERSIONS" ]; then
-            JIRA_VERSIONS="None"
+          if [ -z "$RELEASE_ISSUES_SLACK" ]; then
+            RELEASE_ISSUES_SLACK="No issues found"
           fi
 
           curl -s -X POST -H "Content-Type: application/json" \
@@ -391,11 +412,10 @@ jobs:
                   \"type\": \"section\",
                   \"fields\": [
                     {\"type\": \"mrkdwn\", \"text\": \"*Repository:*\n<https://github.com/${{ github.repository }}|${{ github.repository }}>\"},
-                    {\"type\": \"mrkdwn\", \"text\": \"*Tag:*\n\`${RELEASE_TAG}\`\"},
+                    {\"type\": \"mrkdwn\", \"text\": \"*Release Version:*\n\`${RELEASE_TAG}\`\"},
                     {\"type\": \"mrkdwn\", \"text\": \"*Commit:*\n\`${SHORT_SHA}\`\"},
                     {\"type\": \"mrkdwn\", \"text\": \"*Triggered by:*\n${{ github.actor }}\"},
                     {\"type\": \"mrkdwn\", \"text\": \"*Status:*\n\`${STATUS_TEXT}\`\"},
-                    {\"type\": \"mrkdwn\", \"text\": \"*Jira Release:*\n${JIRA_VERSIONS}\"},
                     {\"type\": \"mrkdwn\", \"text\": \"*Jira Issues:*\n${JIRA_LINKS}\"}
                   ]
                 },
@@ -405,6 +425,14 @@ jobs:
                   \"text\": {
                     \"type\": \"mrkdwn\",
                     \"text\": \"*Release Summary: ${PR_COUNT} PRs from ${AUTHOR_COUNT} contributors*\n\n${PR_SUMMARY}\"
+                  }
+                },
+                {\"type\": \"divider\"},
+                {
+                  \"type\": \"section\",
+                  \"text\": {
+                    \"type\": \"mrkdwn\",
+                    \"text\": \"*Release Contents (${RELEASE_TAG}):*\n\n${RELEASE_ISSUES_SLACK}\"
                   }
                 },
                 {\"type\": \"divider\"},
