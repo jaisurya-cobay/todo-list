@@ -4,8 +4,8 @@ name: Jira - Subtask Status Automation
 # Developer commit convention:
 #   "PROJ-XX started ..." → To Do → In Progress
 #   "PROJ-XX completed ..." → In Progress → Code Review
-# PR merge to master → all subtasks → Staging
-# Production deploy (manual) → subtasks → Production → Done
+# PR merge to develop → all subtasks → Staging
+# Production deploy (deploy.yml on master) → subtasks → Production → Done
 
 on:
   push:
@@ -15,7 +15,7 @@ on:
   pull_request:
     types: [closed]
     branches:
-      - master
+      - develop
   workflow_dispatch:
     inputs:
       deploy_env:
