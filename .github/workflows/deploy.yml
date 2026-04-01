@@ -29,8 +29,40 @@ jobs:
       - name: Set release variables
         run: |
           echo "RELEASE_DATE=$(date +%Y-%m-%d)" >> "$GITHUB_ENV"
-          echo "RELEASE_TAG=release-$(date +%Y-%m-%d)-${{ github.run_number }}" >> "$GITHUB_ENV"
           echo "SHORT_SHA=${GITHUB_SHA:0:7}" >> "$GITHUB_ENV"
+
+          # Find latest semver tag
+          LATEST_TAG=$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -1)
+
+          if [ -z "$LATEST_TAG" ]; then
+            MAJOR=1; MINOR=0; PATCH=0
+            echo "No semver tag found, starting at v1.0.0"
+          else
+            echo "Latest semver tag: ${LATEST_TAG}"
+            VERSION="${LATEST_TAG#v}"
+            MAJOR=$(echo "$VERSION" | cut -d. -f1)
+            MINOR=$(echo "$VERSION" | cut -d. -f2)
+            PATCH=$(echo "$VERSION" | cut -d. -f3)
+          fi
+
+          # Detect bump type from merge commit / PR title
+          MERGE_MSG=$(git log -1 --pretty=format:'%s %b')
+          echo "Merge message: ${MERGE_MSG}"
+
+          if echo "$MERGE_MSG" | grep -qiE '\[major\]|BREAKING CHANGE'; then
+            MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0
+            echo "Bump: MAJOR"
+          elif echo "$MERGE_MSG" | grep -qiE '\[minor\]|feat|feature|enhancement'; then
+            MINOR=$((MINOR + 1)); PATCH=0
+            echo "Bump: MINOR"
+          else
+            PATCH=$((PATCH + 1))
+            echo "Bump: PATCH"
+          fi
+
+          RELEASE_TAG="v${MAJOR}.${MINOR}.${PATCH}"
+          echo "RELEASE_TAG=${RELEASE_TAG}" >> "$GITHUB_ENV"
+          echo "Release version: ${RELEASE_TAG}"
 
       - name: Build
         run: echo "Building..."
@@ -260,7 +292,7 @@ jobs:
           git push origin "${RELEASE_TAG}"
 
           gh release create "${RELEASE_TAG}" \
-            --title "Release ${RELEASE_DATE} (#${{ github.run_number }})" \
+            --title "${RELEASE_TAG} (${RELEASE_DATE})" \
             --notes "$(echo -e "$NOTES")" \
             --latest
 
