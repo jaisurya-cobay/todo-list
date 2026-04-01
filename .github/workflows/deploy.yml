@@ -131,9 +131,10 @@ jobs:
 
           if [ -n "$VERSION_IDS" ]; then
             FIRST_VERSION=$(echo "$VERSION_NAMES" | cut -d',' -f1 | xargs)
+            SANITIZED_TAG=$(echo "$FIRST_VERSION" | tr ' ' '-' | sed 's/[^a-zA-Z0-9._-]//g')
             echo "Collected fix versions: ${VERSION_NAMES}"
-            echo "Using Jira version as release tag: ${FIRST_VERSION}"
-            echo "RELEASE_TAG=${FIRST_VERSION}" >> "$GITHUB_ENV"
+            echo "Using Jira version as release tag: ${SANITIZED_TAG} (from: ${FIRST_VERSION})"
+            echo "RELEASE_TAG=${SANITIZED_TAG}" >> "$GITHUB_ENV"
             echo "version_ids=${VERSION_IDS}" >> "$GITHUB_OUTPUT"
             echo "version_names=${VERSION_NAMES}" >> "$GITHUB_OUTPUT"
             echo "found_versions=true" >> "$GITHUB_OUTPUT"
