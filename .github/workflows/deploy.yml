@@ -17,7 +17,6 @@ jobs:
     runs-on: ubuntu-latest
     env:
       JIRA_PROJECT_KEY: ${{ vars.JIRA_PROJECT_KEY || 'XPRMNTS' }}
-      JIRA_PROJECT_ID: ${{ vars.JIRA_PROJECT_ID || '10208' }}
       PRODUCTION_TRANSITION_ID: ${{ vars.JIRA_TRANSITION_PRODUCTION || '51' }}
       DONE_TRANSITION_ID: ${{ vars.JIRA_TRANSITION_DONE || '31' }}
     steps:
@@ -126,7 +125,7 @@ jobs:
           echo "### Jira Issues → Production" >> "$GITHUB_STEP_SUMMARY"
           echo "Issues: ${{ steps.issues.outputs.keys }}" >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Create Jira Release
+      - name: Collect fix versions from issues
         if: steps.issues.outputs.found == 'true'
         id: jira_release
         env:
@@ -134,52 +133,74 @@ jobs:
           JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
           JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
         run: |
-          VERSION_NAME="${RELEASE_TAG}"
+          VERSION_IDS=""
+          VERSION_NAMES=""
 
-          VERSION_RESPONSE=$(curl -s -w "\n%{http_code}" \
-            -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
-            -H "Content-Type: application/json" \
-            -X POST \
-            "${JIRA_BASE_URL}/rest/api/3/version" \
-            -d "{
-              \"name\": \"${VERSION_NAME}\",
-              \"projectId\": ${JIRA_PROJECT_ID},
-              \"released\": true,
-              \"releaseDate\": \"${RELEASE_DATE}\",
-              \"description\": \"Automated release from GitHub Actions run #${{ github.run_number }}\"
-            }")
+          for KEY in ${{ steps.issues.outputs.keys }}; do
+            echo "Fetching fix versions for ${KEY}..."
 
-          HTTP_CODE=$(echo "$VERSION_RESPONSE" | tail -1)
-          BODY=$(echo "$VERSION_RESPONSE" | sed '$d')
-          VERSION_ID=$(echo "$BODY" | jq -r '.id // empty')
+            RESPONSE=$(curl -s \
+              -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
+              -H "Content-Type: application/json" \
+              "${JIRA_BASE_URL}/rest/api/3/issue/${KEY}?fields=fixVersions")
 
-          if [ -n "$VERSION_ID" ]; then
-            echo "Created Jira version: ${VERSION_NAME} (ID: ${VERSION_ID})"
-            echo "version_id=${VERSION_ID}" >> "$GITHUB_OUTPUT"
-            echo "version_name=${VERSION_NAME}" >> "$GITHUB_OUTPUT"
+            VERSIONS=$(echo "$RESPONSE" | jq -r '.fields.fixVersions // []')
+            COUNT=$(echo "$VERSIONS" | jq 'length')
+
+            if [ "$COUNT" = "0" ]; then
+              echo "  ::warning::${KEY} has no fix version assigned"
+              continue
+            fi
+
+            while IFS='|' read -r VID VNAME; do
+              [ -z "$VID" ] && continue
+              if ! echo "$VERSION_IDS" | grep -q "$VID"; then
+                VERSION_IDS="${VERSION_IDS}${VERSION_IDS:+ }${VID}"
+                VERSION_NAMES="${VERSION_NAMES}${VERSION_NAMES:+, }${VNAME}"
+                echo "  -> Found version: ${VNAME} (ID: ${VID})"
+              fi
+            done < <(echo "$VERSIONS" | jq -r '.[] | "\(.id)|\(.name)"')
+          done
+
+          if [ -n "$VERSION_IDS" ]; then
+            echo "Collected fix versions: ${VERSION_NAMES}"
+            echo "version_ids=${VERSION_IDS}" >> "$GITHUB_OUTPUT"
+            echo "version_names=${VERSION_NAMES}" >> "$GITHUB_OUTPUT"
+            echo "found_versions=true" >> "$GITHUB_OUTPUT"
           else
-            echo "::warning::Failed to create Jira version (HTTP ${HTTP_CODE}): ${BODY}"
+            echo "::warning::No fix versions found on any issues"
+            echo "found_versions=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Link issues to Jira Release
-        if: steps.jira_release.outputs.version_id != ''
+      - name: Mark Jira releases as released
+        if: steps.jira_release.outputs.found_versions == 'true'
         env:
           JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
           JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
           JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
         run: |
-          VERSION_NAME="${{ steps.jira_release.outputs.version_name }}"
+          for VID in ${{ steps.jira_release.outputs.version_ids }}; do
+            echo "Marking version ID ${VID} as released..."
 
-          for KEY in ${{ steps.issues.outputs.keys }}; do
-            curl -s -o /dev/null \
+            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
               -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
               -H "Content-Type: application/json" \
               -X PUT \
-              "${JIRA_BASE_URL}/rest/api/3/issue/${KEY}" \
-              -d "{\"update\":{\"fixVersions\":[{\"add\":{\"name\":\"${VERSION_NAME}\"}}]}}"
+              "${JIRA_BASE_URL}/rest/api/3/version/${VID}" \
+              -d "{
+                \"released\": true,
+                \"releaseDate\": \"${RELEASE_DATE}\"
+              }")
 
-            echo "  -> ${KEY} linked to ${VERSION_NAME}"
+            if [ "$HTTP_CODE" = "200" ]; then
+              echo "  -> Version ${VID} marked as released"
+            else
+              echo "  ::warning::Failed to mark version ${VID} as released (HTTP ${HTTP_CODE})"
+            fi
           done
+
+          echo "### Jira Releases Marked as Released" >> "$GITHUB_STEP_SUMMARY"
+          echo "Versions: ${{ steps.jira_release.outputs.version_names }}" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Transition issues to Done
         if: steps.issues.outputs.found == 'true'
@@ -274,8 +295,14 @@ jobs:
         run: |
           KEYS="${{ steps.issues.outputs.keys }}"
 
+          JIRA_VERSIONS="${{ steps.jira_release.outputs.version_names }}"
+
           NOTES="## Release Summary\n\n"
-          NOTES+="**PRs:** ${{ steps.prs.outputs.pr_count }} | **Contributors:** ${{ steps.prs.outputs.author_count }}\n\n"
+          NOTES+="**PRs:** ${{ steps.prs.outputs.pr_count }} | **Contributors:** ${{ steps.prs.outputs.author_count }}"
+          if [ -n "$JIRA_VERSIONS" ]; then
+            NOTES+=" | **Jira Release:** ${JIRA_VERSIONS}"
+          fi
+          NOTES+="\n\n"
           NOTES+="## Changes by Developer\n\n"
           NOTES+="${{ steps.prs.outputs.grouped_notes }}\n"
 
@@ -334,8 +361,12 @@ jobs:
           PR_COUNT="${{ steps.prs.outputs.pr_count }}"
           AUTHOR_COUNT="${{ steps.prs.outputs.author_count }}"
           PR_SUMMARY="${{ steps.prs.outputs.pr_summary }}"
+          JIRA_VERSIONS="${{ steps.jira_release.outputs.version_names }}"
           if [ -z "$PR_SUMMARY" ]; then
             PR_SUMMARY="No PRs found"
+          fi
+          if [ -z "$JIRA_VERSIONS" ]; then
+            JIRA_VERSIONS="None"
           fi
 
           curl -s -X POST -H "Content-Type: application/json" \
@@ -364,6 +395,7 @@ jobs:
                     {\"type\": \"mrkdwn\", \"text\": \"*Commit:*\n\`${SHORT_SHA}\`\"},
                     {\"type\": \"mrkdwn\", \"text\": \"*Triggered by:*\n${{ github.actor }}\"},
                     {\"type\": \"mrkdwn\", \"text\": \"*Status:*\n\`${STATUS_TEXT}\`\"},
+                    {\"type\": \"mrkdwn\", \"text\": \"*Jira Release:*\n${JIRA_VERSIONS}\"},
                     {\"type\": \"mrkdwn\", \"text\": \"*Jira Issues:*\n${JIRA_LINKS}\"}
                   ]
                 },
