@@ -1,0 +1,52 @@
+name: Jira - Branch Created → In Progress
+
+on:
+  create:
+
+jobs:
+  transition-to-in-progress:
+    if: github.event.ref_type == 'branch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Extract Jira key and transition to In Progress
+        env:
+          JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
+          JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
+          JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+          IN_PROGRESS_TRANSITION_ID: ${{ vars.JIRA_TRANSITION_IN_PROGRESS || '21' }}
+        run: |
+          BRANCH="${{ github.event.ref }}"
+          echo "Branch created: ${BRANCH}"
+
+          KEY=$(echo "$BRANCH" | grep -oE '[A-Z]+-[0-9]+' | head -1)
+
+          if [ -z "$KEY" ]; then
+            echo "No Jira key found in branch name. Skipping."
+            exit 0
+          fi
+
+          echo "Jira key: ${KEY}"
+
+          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+            -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
+            -H "Content-Type: application/json" \
+            -X POST \
+            "${JIRA_BASE_URL}/rest/api/3/issue/${KEY}/transitions" \
+            -d "{\"transition\":{\"id\":\"${IN_PROGRESS_TRANSITION_ID}\"}}")
+
+          if [ "$HTTP_CODE" = "204" ]; then
+            echo "  -> ${KEY} transitioned to In Progress"
+          else
+            echo "  -> ${KEY} transition failed or already in progress (HTTP ${HTTP_CODE})"
+          fi
+
+          curl -s -o /dev/null \
+            -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
+            -H "Content-Type: application/json" \
+            -X POST \
+            "${JIRA_BASE_URL}/rest/api/3/issue/${KEY}/comment" \
+            -d "{\"body\":{\"type\":\"doc\",\"version\":1,\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"Branch created: ${BRANCH}\"},{\"type\":\"hardBreak\"},{\"type\":\"text\",\"text\":\"Created by: ${{ github.actor }}\"},{\"type\":\"hardBreak\"},{\"type\":\"text\",\"text\":\"Status: In Progress\"}]}]}}"
+
+          echo "### Branch → In Progress" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Branch:** ${BRANCH}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Issue:** ${KEY}" >> "$GITHUB_STEP_SUMMARY"

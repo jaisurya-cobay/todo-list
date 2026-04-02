@@ -13,27 +13,43 @@ jobs:
   transition-to-code-review:
     runs-on: ubuntu-latest
     steps:
-      - name: Extract Jira issue keys
+      - name: Extract Jira keys and determine mode
         id: issues
         env:
           PR_TITLE: ${{ github.event.pull_request.title }}
           PR_BODY: ${{ github.event.pull_request.body }}
           BRANCH: ${{ github.event.pull_request.head.ref }}
         run: |
-          ALL_TEXT="${PR_TITLE} ${PR_BODY} ${BRANCH}"
-          KEYS=$(echo "$ALL_TEXT" | grep -oE '[A-Z]+-[0-9]+' | sort -u | tr '\n' ' ')
+          PARENT_KEY=$(echo "$BRANCH" | grep -oE '[A-Z]+-[0-9]+' | head -1)
+          echo "Parent key (from branch): ${PARENT_KEY}"
 
-          if [ -z "$KEYS" ]; then
-            echo "No Jira issue keys found. Skipping."
-            echo "found=false" >> "$GITHUB_OUTPUT"
+          ALL_TEXT="${PR_TITLE} ${PR_BODY} ${BRANCH}"
+          ALL_KEYS=$(echo "$ALL_TEXT" | grep -oE '[A-Z]+-[0-9]+' | sort -u)
+
+          SUBTASK_KEYS=""
+          for KEY in $ALL_KEYS; do
+            if [ "$KEY" != "$PARENT_KEY" ]; then
+              SUBTASK_KEYS+="${KEY} "
+            fi
+          done
+
+          if [ -n "$SUBTASK_KEYS" ]; then
+            echo "Mode: subtask (found: ${SUBTASK_KEYS})"
+            echo "mode=subtask" >> "$GITHUB_OUTPUT"
+            echo "keys=${SUBTASK_KEYS}" >> "$GITHUB_OUTPUT"
+          elif [ -n "$PARENT_KEY" ]; then
+            echo "Mode: parent-only (${PARENT_KEY})"
+            echo "mode=parent" >> "$GITHUB_OUTPUT"
+            echo "keys=${PARENT_KEY}" >> "$GITHUB_OUTPUT"
           else
-            echo "Found issue keys: ${KEYS}"
-            echo "keys=${KEYS}" >> "$GITHUB_OUTPUT"
-            echo "found=true" >> "$GITHUB_OUTPUT"
+            echo "No Jira keys found. Skipping."
+            echo "mode=none" >> "$GITHUB_OUTPUT"
           fi
 
+          echo "parent_key=${PARENT_KEY}" >> "$GITHUB_OUTPUT"
+
       - name: Transition issues to Code Review
-        if: steps.issues.outputs.found == 'true'
+        if: steps.issues.outputs.mode != 'none'
         env:
           JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
           JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
@@ -44,11 +60,11 @@ jobs:
           PR_TITLE="${{ github.event.pull_request.title }}"
           PR_URL="${{ github.event.pull_request.html_url }}"
           AUTHOR="${{ github.event.pull_request.user.login }}"
+          MODE="${{ steps.issues.outputs.mode }}"
 
           for KEY in ${{ steps.issues.outputs.keys }}; do
-            echo "Processing ${KEY}..."
+            echo "Processing ${KEY} (${MODE} mode)..."
 
-            # Transition to Code Review
             HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
               -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
               -H "Content-Type: application/json" \
@@ -62,7 +78,6 @@ jobs:
               echo "  -> ${KEY} transition failed (HTTP ${HTTP_CODE})"
             fi
 
-            # Add PR link comment
             curl -s -o /dev/null \
               -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
               -H "Content-Type: application/json" \
@@ -71,5 +86,5 @@ jobs:
               -d "{\"body\":{\"type\":\"doc\",\"version\":1,\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"PR #${PR_NUM} opened by ${AUTHOR}\"},{\"type\":\"hardBreak\"},{\"type\":\"text\",\"text\":\"Title: ${PR_TITLE}\"},{\"type\":\"hardBreak\"},{\"type\":\"text\",\"text\":\"URL: ${PR_URL}\"},{\"type\":\"hardBreak\"},{\"type\":\"text\",\"text\":\"Status: Code Review\"}]}]}}"
           done
 
-          echo "### Jira Issues → Code Review" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Issues → Code Review (${MODE} mode)" >> "$GITHUB_STEP_SUMMARY"
           echo "Issues: ${{ steps.issues.outputs.keys }}" >> "$GITHUB_STEP_SUMMARY"

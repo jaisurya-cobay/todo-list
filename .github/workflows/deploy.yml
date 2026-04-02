@@ -17,7 +17,6 @@ jobs:
     runs-on: ubuntu-latest
     env:
       JIRA_PROJECT_KEY: ${{ vars.JIRA_PROJECT_KEY || 'XPRMNTS' }}
-      JIRA_PROJECT_ID: ${{ vars.JIRA_PROJECT_ID || '10208' }}
       PRODUCTION_TRANSITION_ID: ${{ vars.JIRA_TRANSITION_PRODUCTION || '51' }}
       DONE_TRANSITION_ID: ${{ vars.JIRA_TRANSITION_DONE || '31' }}
     steps:
@@ -91,119 +90,147 @@ jobs:
             echo "found=true" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Transition issues to Production
+      - name: Classify and transition issues to Production
         if: steps.issues.outputs.found == 'true'
+        id: classify
         env:
           JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
           JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
           JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
         run: |
-          for KEY in ${{ steps.issues.outputs.keys }}; do
-            echo "Processing ${KEY}..."
+          SUBTASK_KEYS=""
+          PARENT_WITH_SUBTASKS=""
+          PARENT_ONLY_KEYS=""
 
-            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+          for KEY in ${{ steps.issues.outputs.keys }}; do
+            ISSUE_JSON=$(curl -s \
               -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
               -H "Content-Type: application/json" \
-              -X POST \
-              "${JIRA_BASE_URL}/rest/api/3/issue/${KEY}/transitions" \
-              -d "{\"transition\":{\"id\":\"${PRODUCTION_TRANSITION_ID}\"}}")
+              "${JIRA_BASE_URL}/rest/api/3/issue/${KEY}?fields=parent,issuetype,subtasks")
 
-            if [ "$HTTP_CODE" = "204" ]; then
-              echo "  -> ${KEY} transitioned to Production"
+            HAS_PARENT=$(echo "$ISSUE_JSON" | jq -r '.fields.parent.key // empty')
+            SUBTASK_COUNT=$(echo "$ISSUE_JSON" | jq '.fields.subtasks | length // 0')
+
+            if [ -n "$HAS_PARENT" ]; then
+              echo "${KEY} is a subtask (parent: ${HAS_PARENT})"
+              SUBTASK_KEYS+="${KEY} "
+
+              if ! echo "$PARENT_WITH_SUBTASKS" | grep -qw "$HAS_PARENT"; then
+                PARENT_WITH_SUBTASKS+="${HAS_PARENT} "
+              fi
+
+              HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+                -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
+                -H "Content-Type: application/json" \
+                -X POST \
+                "${JIRA_BASE_URL}/rest/api/3/issue/${KEY}/transitions" \
+                -d "{\"transition\":{\"id\":\"${PRODUCTION_TRANSITION_ID}\"}}")
+
+              if [ "$HTTP_CODE" = "204" ]; then
+                echo "  -> ${KEY} transitioned to Production"
+              else
+                echo "  -> ${KEY} transition failed (HTTP ${HTTP_CODE})"
+              fi
+
+              curl -s -o /dev/null \
+                -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
+                -H "Content-Type: application/json" \
+                -X POST \
+                "${JIRA_BASE_URL}/rest/api/3/issue/${KEY}/comment" \
+                -d "{\"body\":{\"type\":\"doc\",\"version\":1,\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"Deployed to Production (${SHORT_SHA})\"},{\"type\":\"hardBreak\"},{\"type\":\"text\",\"text\":\"Repo: ${{ github.repository }}\"}]}]}}"
+
+            elif [ "$SUBTASK_COUNT" -gt 0 ]; then
+              echo "${KEY} is a parent with ${SUBTASK_COUNT} subtasks"
+              if ! echo "$PARENT_WITH_SUBTASKS" | grep -qw "$KEY"; then
+                PARENT_WITH_SUBTASKS+="${KEY} "
+              fi
+
             else
-              echo "  -> ${KEY} transition failed (HTTP ${HTTP_CODE})"
-            fi
+              echo "${KEY} is a parent-only issue (no subtasks)"
+              PARENT_ONLY_KEYS+="${KEY} "
 
-            # Add deployment comment
-            curl -s -o /dev/null \
-              -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
-              -H "Content-Type: application/json" \
-              -X POST \
-              "${JIRA_BASE_URL}/rest/api/3/issue/${KEY}/comment" \
-              -d "{\"body\":{\"type\":\"doc\",\"version\":1,\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"Deployed to Production (${SHORT_SHA})\"},{\"type\":\"hardBreak\"},{\"type\":\"text\",\"text\":\"Repo: ${{ github.repository }}\"}]}]}}"
-          done
+              HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+                -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
+                -H "Content-Type: application/json" \
+                -X POST \
+                "${JIRA_BASE_URL}/rest/api/3/issue/${KEY}/transitions" \
+                -d "{\"transition\":{\"id\":\"${PRODUCTION_TRANSITION_ID}\"}}")
 
-          echo "### Jira Issues → Production" >> "$GITHUB_STEP_SUMMARY"
-          echo "Issues: ${{ steps.issues.outputs.keys }}" >> "$GITHUB_STEP_SUMMARY"
+              if [ "$HTTP_CODE" = "204" ]; then
+                echo "  -> ${KEY} transitioned to Production (parent-only)"
+              else
+                echo "  -> ${KEY} transition failed (HTTP ${HTTP_CODE})"
+              fi
 
-      - name: Create Jira Release
-        if: steps.issues.outputs.found == 'true'
-        id: jira_release
-        env:
-          JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
-          JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
-          JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
-        run: |
-          VERSION_NAME="${RELEASE_TAG}"
-
-          VERSION_RESPONSE=$(curl -s -w "\n%{http_code}" \
-            -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
-            -H "Content-Type: application/json" \
-            -X POST \
-            "${JIRA_BASE_URL}/rest/api/3/version" \
-            -d "{
-              \"name\": \"${VERSION_NAME}\",
-              \"projectId\": ${JIRA_PROJECT_ID},
-              \"released\": true,
-              \"releaseDate\": \"${RELEASE_DATE}\",
-              \"description\": \"Automated release from GitHub Actions run #${{ github.run_number }}\"
-            }")
-
-          HTTP_CODE=$(echo "$VERSION_RESPONSE" | tail -1)
-          BODY=$(echo "$VERSION_RESPONSE" | sed '$d')
-          VERSION_ID=$(echo "$BODY" | jq -r '.id // empty')
-
-          if [ -n "$VERSION_ID" ]; then
-            echo "Created Jira version: ${VERSION_NAME} (ID: ${VERSION_ID})"
-            echo "version_id=${VERSION_ID}" >> "$GITHUB_OUTPUT"
-            echo "version_name=${VERSION_NAME}" >> "$GITHUB_OUTPUT"
-          else
-            echo "::warning::Failed to create Jira version (HTTP ${HTTP_CODE}): ${BODY}"
-          fi
-
-      - name: Link issues to Jira Release
-        if: steps.jira_release.outputs.version_id != ''
-        env:
-          JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
-          JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
-          JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
-        run: |
-          VERSION_NAME="${{ steps.jira_release.outputs.version_name }}"
-
-          for KEY in ${{ steps.issues.outputs.keys }}; do
-            curl -s -o /dev/null \
-              -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
-              -H "Content-Type: application/json" \
-              -X PUT \
-              "${JIRA_BASE_URL}/rest/api/3/issue/${KEY}" \
-              -d "{\"update\":{\"fixVersions\":[{\"add\":{\"name\":\"${VERSION_NAME}\"}}]}}"
-
-            echo "  -> ${KEY} linked to ${VERSION_NAME}"
-          done
-
-      - name: Transition issues to Done
-        if: steps.issues.outputs.found == 'true'
-        env:
-          JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
-          JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
-          JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
-        run: |
-          for KEY in ${{ steps.issues.outputs.keys }}; do
-            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
-              -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
-              -H "Content-Type: application/json" \
-              -X POST \
-              "${JIRA_BASE_URL}/rest/api/3/issue/${KEY}/transitions" \
-              -d "{\"transition\":{\"id\":\"${DONE_TRANSITION_ID}\"}}")
-
-            if [ "$HTTP_CODE" = "204" ]; then
-              echo "  -> ${KEY} transitioned to Done"
-            else
-              echo "  -> ${KEY} Done transition failed (HTTP ${HTTP_CODE})"
+              curl -s -o /dev/null \
+                -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
+                -H "Content-Type: application/json" \
+                -X POST \
+                "${JIRA_BASE_URL}/rest/api/3/issue/${KEY}/comment" \
+                -d "{\"body\":{\"type\":\"doc\",\"version\":1,\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"Deployed to Production (${SHORT_SHA})\"},{\"type\":\"hardBreak\"},{\"type\":\"text\",\"text\":\"Repo: ${{ github.repository }}\"}]}]}}"
             fi
           done
 
-          echo "### Jira Issues → Done" >> "$GITHUB_STEP_SUMMARY"
+          echo "Subtasks transitioned: ${SUBTASK_KEYS}"
+          echo "Parents with subtasks: ${PARENT_WITH_SUBTASKS}"
+          echo "Parent-only transitioned: ${PARENT_ONLY_KEYS}"
+
+          echo "subtask_keys=${SUBTASK_KEYS}" >> "$GITHUB_OUTPUT"
+          echo "parent_with_subtasks=${PARENT_WITH_SUBTASKS}" >> "$GITHUB_OUTPUT"
+          echo "parent_only_keys=${PARENT_ONLY_KEYS}" >> "$GITHUB_OUTPUT"
+
+          echo "### Issues → Production" >> "$GITHUB_STEP_SUMMARY"
+          echo "Subtasks: ${SUBTASK_KEYS}" >> "$GITHUB_STEP_SUMMARY"
+          echo "Parent-only: ${PARENT_ONLY_KEYS}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Check all subtasks at Production and move parent to Done
+        if: steps.classify.outputs.parent_with_subtasks != ''
+        env:
+          JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
+          JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
+          JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+        run: |
+          for PARENT_KEY in ${{ steps.classify.outputs.parent_with_subtasks }}; do
+            echo "Checking subtasks for parent: ${PARENT_KEY}"
+
+            JQL=$(python3 -c "import urllib.parse; print(urllib.parse.quote('parent=${PARENT_KEY}'))")
+            SUBTASKS=$(curl -s \
+              -u "$JIRA_EMAIL:$JIRA_API_TOKEN" \
+              "${JIRA_BASE_URL}/rest/api/3/search/jql?jql=${JQL}&fields=status,summary")
+
+            TOTAL=$(echo "$SUBTASKS" | jq -r '.total // 0')
+            echo "  Found ${TOTAL} subtasks under ${PARENT_KEY}"
+
+            if [ "$TOTAL" = "0" ]; then
+              echo "  No subtasks found, skipping parent"
+              continue
+            fi
+
+            NOT_AT_PRODUCTION=$(echo "$SUBTASKS" | jq '[.issues[] | select(.fields.status.name != "Production")] | length')
+
+            if [ "$NOT_AT_PRODUCTION" = "0" ]; then
+              echo "  All ${TOTAL} subtasks are at Production -> moving ${PARENT_KEY} to Done"
+
+              HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+                -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
+                -H "Content-Type: application/json" \
+                -X POST \
+                "${JIRA_BASE_URL}/rest/api/3/issue/${PARENT_KEY}/transitions" \
+                -d "{\"transition\":{\"id\":\"${DONE_TRANSITION_ID}\"}}")
+
+              if [ "$HTTP_CODE" = "204" ]; then
+                echo "  -> ${PARENT_KEY} transitioned to Done"
+              else
+                echo "  -> ${PARENT_KEY} Done transition failed (HTTP ${HTTP_CODE})"
+              fi
+            else
+              echo "  ${NOT_AT_PRODUCTION} subtask(s) not yet at Production, parent stays as-is"
+              echo "$SUBTASKS" | jq -r '.issues[] | select(.fields.status.name != "Production") | "    - \(.key): \(.fields.status.name)"'
+            fi
+          done
+
+          echo "### Parent Status Check" >> "$GITHUB_STEP_SUMMARY"
+          echo "Parents checked: ${{ steps.classify.outputs.parent_with_subtasks }}" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Collect merged PRs since last release
         id: prs
@@ -321,7 +348,6 @@ jobs:
             URGENCY="Deployment encountered errors. Check GitHub Actions."
           fi
 
-          # Build Jira links
           JIRA_LINKS=""
           if [ -n "$KEYS" ]; then
             for KEY in $KEYS; do
