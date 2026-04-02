@@ -1,11 +1,11 @@
 <!doctype html>
-<!-- XPRMNTS-71: Subtask workflow test -->
+<!-- XPRMNTS-97: Complete workflow test v2.3.0 -->
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <!-- XPRMNTS-56: Staging Slack notification test -->
-    <title>TODO App</title>
+    <title>TODO App - Task Manager</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
@@ -19,7 +19,7 @@
       <header class="header">
         <div class="brand">
           <h1>TODO <span id="task-count-badge" class="badge">0</span></h1>
-          <p class="subtitle">Simple, fast, offline-friendly. Stay organized!</p>
+          <p class="subtitle">Simple, fast, offline-friendly. Stay productive!</p>
         </div>
         <button type="button" id="theme-toggle" class="btn ghost theme-toggle-btn" title="Toggle theme">
           Light Mode
@@ -39,7 +39,7 @@
             name="new-todo"
             type="text"
             inputmode="text"
-            placeholder="Add a task…"
+            placeholder="What needs to be done?"
             maxlength="200"
             required
           />
@@ -82,7 +82,7 @@
         <div class="meta" aria-live="polite">
           <span id="count"></span>
           <span class="sep">·</span>
-          <span id="hint" class="hint">Tip: press / to focus input. Double-click a todo to edit.</span>
+          <span id="hint" class="hint">Press / to focus input. Double-click to edit a todo.</span>
           <button type="button" id="shortcuts-toggle" class="btn ghost" style="height:28px;font-size:12px;">Shortcuts</button>
         </div>
         <div id="shortcuts-panel" class="shortcuts-panel" hidden>
@@ -98,7 +98,7 @@
           <li class="item" data-id="">
             <label class="checkbox">
               <input type="checkbox" class="toggle" />
-              <span aria-hidden="true" class="box"></span>
+              <span aria-hidden="true" class="box">test</span>
             </label>
 
             <div class="content">
@@ -114,9 +114,9 @@
       </section>
 
       <footer class="footer">
-        <span>Data stays in your browser (localStorage). Built with care.</span>
+        <span>Your data stays local (localStorage). Built with care.</span>
         <span id="last-updated" class="last-updated"></span>
-        <span class="app-version">v2.2.0 · Updated Mar 2026</span>
+        <span class="app-version">v2.3.0 · Updated Apr 2026</span>
       </footer>
     </main>
 
@@ -125,8 +125,4 @@
     <script src="./app.js" defer></script>
   </body>
 </html>
-<!-- XPRMNTS-71 test -->
-<!-- test run -->
-<!-- XPRMNTS-58 done -->
-<!-- XPRMNTS-60 feature -->
-<!-- 61 done -->
+<!-- XPRMNTS-97: Complete workflow test -->
