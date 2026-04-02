@@ -1,14 +1,12 @@
 name: Jira - Subtask Status Automation
 
 # Smart parent-subtask workflow:
-#   Parent WITH subtasks: To Do → In Progress (first push) → Done (all subtasks done)
+#   Parent WITH subtasks: To Do → In Progress (first push) → Done (Jira Automation: when all subtasks Done)
 #   Parent WITHOUT subtasks: normal flow handled by other workflows
-#   Subtask commit convention:
-#     "PROJ-XX started ..." → subtask To Do → In Progress
-#     "PROJ-XX completed ..." → subtask In Progress → Code Review
+#   Subtask: To Do → In Progress (manual) → Code Review (auto: PR opened) → Staging (auto: PR merged)
+#     → Production (auto: deploy/workflow_dispatch) → Done (manual)
 #   First push to parent branch → parent → In Progress (if it has subtasks)
-#   Production deploy (manual workflow_dispatch) → specified subtasks → Production → Done
-#     When all subtasks done → parent → Done
+#   Jira Automation moves parent to Done when all subtasks are Done
 
 on:
   push:
@@ -34,76 +32,46 @@ on:
 
 jobs:
 
-  # --- On Commit: Move subtasks based on keywords + parent to In Progress ---
+  # --- On Commit: Move parent to In Progress (first push to feature branch) ---
   on-commit:
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
-      - name: Process commits and parent branch
+      - name: Move parent to In Progress on first push
         env:
           JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
           JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
           JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
           IN_PROGRESS_TRANSITION_ID: ${{ vars.JIRA_TRANSITION_IN_PROGRESS || '21' }}
-          CODE_REVIEW_TRANSITION_ID: ${{ vars.JIRA_TRANSITION_CODE_REVIEW || '61' }}
         run: |
-          move_issue() {
-            local KEY=$1
-            local TARGET_STATUS=$2
-            local TRANSITION_ID=$3
-
-            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
-              -u "$JIRA_EMAIL:$JIRA_API_TOKEN" \
-              -H "Content-Type: application/json" \
-              -d "{\"transition\":{\"id\":\"$TRANSITION_ID\"}}" \
-              "$JIRA_BASE_URL/rest/api/3/issue/$KEY/transitions")
-
-            if [ "$HTTP_CODE" = "204" ]; then
-              echo "  -> $KEY → $TARGET_STATUS"
-            else
-              echo "  -> $KEY → $TARGET_STATUS skipped/failed (HTTP $HTTP_CODE)"
-            fi
-          }
-
-          get_subtask_count() {
-            local KEY=$1
-            curl -s -u "$JIRA_EMAIL:$JIRA_API_TOKEN" \
-              "$JIRA_BASE_URL/rest/api/3/issue/$KEY?fields=subtasks" \
-              | jq '.fields.subtasks | length // 0'
-          }
-
           BRANCH="${{ github.ref_name }}"
           PARENT_KEY=$(echo "$BRANCH" | grep -oE '[A-Z]+-[0-9]+' | head -1)
 
-          if [ -n "$PARENT_KEY" ]; then
-            SUBTASK_COUNT=$(get_subtask_count "$PARENT_KEY")
-            echo "Branch: $BRANCH | Parent: $PARENT_KEY | Subtasks: $SUBTASK_COUNT"
-
-            if [ "$SUBTASK_COUNT" -gt 0 ] 2>/dev/null; then
-              echo "Parent has subtasks — moving parent to In Progress (idempotent)"
-              move_issue "$PARENT_KEY" "In Progress" "$IN_PROGRESS_TRANSITION_ID"
-            fi
+          if [ -z "$PARENT_KEY" ]; then
+            echo "No Jira key found in branch: $BRANCH"
+            exit 0
           fi
 
-          COMMITS='${{ toJSON(github.event.commits.*.message) }}'
+          SUBTASK_COUNT=$(curl -s -u "$JIRA_EMAIL:$JIRA_API_TOKEN" \
+            "$JIRA_BASE_URL/rest/api/3/issue/$PARENT_KEY?fields=subtasks" \
+            | jq '.fields.subtasks | length // 0')
 
-          echo "$COMMITS" | jq -r '.[]' | while IFS= read -r MSG; do
-            echo "--- Commit: $MSG ---"
+          echo "Branch: $BRANCH | Parent: $PARENT_KEY | Subtasks: $SUBTASK_COUNT"
 
-            KEY=$(echo "$MSG" | grep -oE '[A-Z]+-[0-9]+' | head -1)
-            if [ -z "$KEY" ]; then
-              echo "  No Jira key found, skipping"
-              continue
+          if [ "$SUBTASK_COUNT" -gt 0 ] 2>/dev/null; then
+            echo "Parent has subtasks — moving parent to In Progress (idempotent)"
+            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+              -u "$JIRA_EMAIL:$JIRA_API_TOKEN" \
+              -H "Content-Type: application/json" \
+              -d "{\"transition\":{\"id\":\"$IN_PROGRESS_TRANSITION_ID\"}}" \
+              "$JIRA_BASE_URL/rest/api/3/issue/$PARENT_KEY/transitions")
+
+            if [ "$HTTP_CODE" = "204" ]; then
+              echo "  -> $PARENT_KEY → In Progress"
+            else
+              echo "  -> $PARENT_KEY → In Progress skipped/failed (HTTP $HTTP_CODE)"
             fi
-
-            if echo "$MSG" | grep -qi "started"; then
-              move_issue "$KEY" "In Progress" "$IN_PROGRESS_TRANSITION_ID"
-            fi
-
-            if echo "$MSG" | grep -qi "completed"; then
-              move_issue "$KEY" "Code Review" "$CODE_REVIEW_TRANSITION_ID"
-            fi
-          done
+          fi
 
   # --- On PR Merge to develop: Move subtasks to Staging (skip parent with subtasks) ---
   on-pr-merge:
@@ -213,67 +181,8 @@ jobs:
               "$JIRA_BASE_URL/rest/api/3/issue/$KEY/transitions")
 
             if [ "$HTTP_CODE" = "204" ]; then
-              echo "  -> $KEY → Production"
+              echo "  -> $KEY → Production (manual Done required)"
             else
               echo "  -> $KEY → Production failed (HTTP $HTTP_CODE)"
-            fi
-
-            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
-              -u "$JIRA_EMAIL:$JIRA_API_TOKEN" \
-              -H "Content-Type: application/json" \
-              -d "{\"transition\":{\"id\":\"$DONE_TRANSITION_ID\"}}" \
-              "$JIRA_BASE_URL/rest/api/3/issue/$KEY/transitions")
-
-            if [ "$HTTP_CODE" = "204" ]; then
-              echo "  -> $KEY → Done"
-            else
-              echo "  -> $KEY → Done failed (HTTP $HTTP_CODE)"
-            fi
-
-            PARENT_RESPONSE=$(curl -s -u "$JIRA_EMAIL:$JIRA_API_TOKEN" \
-              "$JIRA_BASE_URL/rest/api/3/issue/$KEY?fields=parent")
-            PARENT_KEY=$(echo "$PARENT_RESPONSE" | jq -r '.fields.parent.key // empty')
-
-            if [ -n "$PARENT_KEY" ]; then
-              if ! echo "$PARENT_KEYS" | grep -q "$PARENT_KEY"; then
-                PARENT_KEYS="${PARENT_KEYS}${PARENT_KEYS:+ }${PARENT_KEY}"
-              fi
-            fi
-          done
-
-          for PARENT in $PARENT_KEYS; do
-            echo ""
-            echo "=== Checking parent $PARENT completion ==="
-
-            JQL=$(python3 -c "import urllib.parse; print(urllib.parse.quote('parent=$PARENT AND statusCategory != Done'))")
-            REMAINING=$(curl -s -u "$JIRA_EMAIL:$JIRA_API_TOKEN" \
-              "$JIRA_BASE_URL/rest/api/3/search/jql?jql=${JQL}&fields=status,summary")
-
-            NOT_DONE=$(echo "$REMAINING" | jq -r '.total // 0')
-            echo "  Subtasks not yet Done: $NOT_DONE"
-
-            if [ "$NOT_DONE" = "0" ]; then
-              echo "  All subtasks completed! Moving parent $PARENT to Done."
-
-              HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
-                -u "$JIRA_EMAIL:$JIRA_API_TOKEN" \
-                -H "Content-Type: application/json" \
-                -d "{\"transition\":{\"id\":\"$DONE_TRANSITION_ID\"}}" \
-                "$JIRA_BASE_URL/rest/api/3/issue/$PARENT/transitions")
-
-              if [ "$HTTP_CODE" = "204" ]; then
-                echo "  -> $PARENT → Done"
-              else
-                echo "  -> $PARENT → Done failed (HTTP $HTTP_CODE)"
-              fi
-
-              curl -s -o /dev/null \
-                -u "$JIRA_EMAIL:$JIRA_API_TOKEN" \
-                -H "Content-Type: application/json" \
-                -X POST \
-                "$JIRA_BASE_URL/rest/api/3/issue/$PARENT/comment" \
-                -d "{\"body\":{\"type\":\"doc\",\"version\":1,\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"All subtasks completed. Parent moved to Done automatically.\"}]}]}}"
-            else
-              echo "  Parent $PARENT NOT moved — $NOT_DONE subtask(s) still pending."
             fi
           done

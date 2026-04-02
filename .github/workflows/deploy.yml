@@ -237,7 +237,7 @@ jobs:
           echo -e "$ISSUE_SUMMARY" >> "$GITHUB_OUTPUT"
           echo "EOFSLACK" >> "$GITHUB_OUTPUT"
 
-      - name: Transition issues to Done (skip parents with subtasks)
+      - name: Transition standalone issues to Done (subtasks stay at Production)
         if: steps.issues.outputs.found == 'true'
         env:
           JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
@@ -245,9 +245,18 @@ jobs:
           JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
         run: |
           TRANSITIONED="${{ steps.prod_transition.outputs.transitioned_keys }}"
-          SKIPPED="${{ steps.prod_transition.outputs.skipped_parents }}"
 
           for KEY in $TRANSITIONED; do
+            # Check if this issue has a parent (i.e. it's a subtask)
+            PARENT_KEY=$(curl -s -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
+              "${JIRA_BASE_URL}/rest/api/3/issue/${KEY}?fields=parent" \
+              | jq -r '.fields.parent.key // empty')
+
+            if [ -n "$PARENT_KEY" ]; then
+              echo "  -> ${KEY} is a subtask — staying at Production (manual Done required)"
+              continue
+            fi
+
             HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
               -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
               -H "Content-Type: application/json" \
@@ -256,50 +265,13 @@ jobs:
               -d "{\"transition\":{\"id\":\"${DONE_TRANSITION_ID}\"}}")
 
             if [ "$HTTP_CODE" = "204" ]; then
-              echo "  -> ${KEY} transitioned to Done"
+              echo "  -> ${KEY} transitioned to Done (standalone issue)"
             else
               echo "  -> ${KEY} Done transition failed (HTTP ${HTTP_CODE})"
             fi
           done
 
-          for PARENT in $SKIPPED; do
-            echo "Checking parent $PARENT: are all subtasks Done?"
-
-            JQL=$(python3 -c "import urllib.parse; print(urllib.parse.quote('parent=$PARENT AND statusCategory != Done'))")
-            REMAINING=$(curl -s -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
-              "${JIRA_BASE_URL}/rest/api/3/search/jql?jql=${JQL}&fields=status")
-
-            NOT_DONE=$(echo "$REMAINING" | jq -r '.total // 0')
-            echo "  Subtasks not yet Done: $NOT_DONE"
-
-            if [ "$NOT_DONE" = "0" ]; then
-              echo "  All subtasks completed! Moving parent $PARENT to Done."
-
-              HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
-                -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
-                -H "Content-Type: application/json" \
-                -X POST \
-                "${JIRA_BASE_URL}/rest/api/3/issue/${PARENT}/transitions" \
-                -d "{\"transition\":{\"id\":\"${DONE_TRANSITION_ID}\"}}")
-
-              if [ "$HTTP_CODE" = "204" ]; then
-                echo "  -> $PARENT → Done"
-              else
-                echo "  -> $PARENT → Done failed (HTTP $HTTP_CODE)"
-              fi
-
-              curl -s -o /dev/null \
-                -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
-                -H "Content-Type: application/json" \
-                -X POST \
-                "${JIRA_BASE_URL}/rest/api/3/issue/${PARENT}/comment" \
-                -d "{\"body\":{\"type\":\"doc\",\"version\":1,\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"All subtasks completed. Parent moved to Done automatically.\"}]}]}}"
-            else
-              echo "  Parent $PARENT NOT moved — $NOT_DONE subtask(s) still pending."
-            fi
-          done
-
-          echo "### Jira Issues → Done" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Jira Issues → Done (standalone only, subtasks stay at Production)" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Collect merged PRs since last release
         id: prs
