@@ -48,7 +48,15 @@ jobs:
           for KEY in ${{ steps.issues.outputs.keys }}; do
             echo "Processing ${KEY}..."
 
-            # Transition to Code Review
+            SUBTASK_COUNT=$(curl -s -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
+              "${JIRA_BASE_URL}/rest/api/3/issue/${KEY}?fields=subtasks" \
+              | jq '.fields.subtasks | length // 0')
+
+            if [ "$SUBTASK_COUNT" -gt 0 ] 2>/dev/null; then
+              echo "  Skipping ${KEY} (parent with ${SUBTASK_COUNT} subtasks — only uses To Do / In Progress / Done)"
+              continue
+            fi
+
             HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
               -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
               -H "Content-Type: application/json" \
@@ -62,7 +70,6 @@ jobs:
               echo "  -> ${KEY} transition failed (HTTP ${HTTP_CODE})"
             fi
 
-            # Add PR link comment
             curl -s -o /dev/null \
               -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
               -H "Content-Type: application/json" \

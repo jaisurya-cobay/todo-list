@@ -1,11 +1,14 @@
 name: Jira - Subtask Status Automation
 
-# Subtask status auto-move based on commit keywords and PR events
-# Developer commit convention:
-#   "PROJ-XX started ..." → To Do → In Progress
-#   "PROJ-XX completed ..." → In Progress → Code Review
-# PR merge to develop → all subtasks → Staging
-# Production deploy (deploy.yml on master) → subtasks → Production → Done
+# Smart parent-subtask workflow:
+#   Parent WITH subtasks: To Do → In Progress (first push) → Done (all subtasks done)
+#   Parent WITHOUT subtasks: normal flow handled by other workflows
+#   Subtask commit convention:
+#     "PROJ-XX started ..." → subtask To Do → In Progress
+#     "PROJ-XX completed ..." → subtask In Progress → Code Review
+#   First push to parent branch → parent → In Progress (if it has subtasks)
+#   Production deploy (manual workflow_dispatch) → specified subtasks → Production → Done
+#     When all subtasks done → parent → Done
 
 on:
   push:
@@ -25,18 +28,18 @@ on:
         options:
           - production
       subtask_keys:
-        description: 'Subtask keys (comma separated, e.g. PROJ-61,PROJ-62). Leave empty for ALL subtasks.'
-        required: false
+        description: 'Subtask keys (comma separated, e.g. PROJ-61,PROJ-62).'
+        required: true
         type: string
 
 jobs:
 
-  # --- On Commit: Move individual subtasks based on keywords ---
+  # --- On Commit: Move subtasks based on keywords + parent to In Progress ---
   on-commit:
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
-      - name: Process commits for subtask status
+      - name: Process commits and parent branch
         env:
           JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
           JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
@@ -58,9 +61,29 @@ jobs:
             if [ "$HTTP_CODE" = "204" ]; then
               echo "  -> $KEY → $TARGET_STATUS"
             else
-              echo "  -> $KEY failed (HTTP $HTTP_CODE)"
+              echo "  -> $KEY → $TARGET_STATUS skipped/failed (HTTP $HTTP_CODE)"
             fi
           }
+
+          get_subtask_count() {
+            local KEY=$1
+            curl -s -u "$JIRA_EMAIL:$JIRA_API_TOKEN" \
+              "$JIRA_BASE_URL/rest/api/3/issue/$KEY?fields=subtasks" \
+              | jq '.fields.subtasks | length // 0'
+          }
+
+          BRANCH="${{ github.ref_name }}"
+          PARENT_KEY=$(echo "$BRANCH" | grep -oE '[A-Z]+-[0-9]+' | head -1)
+
+          if [ -n "$PARENT_KEY" ]; then
+            SUBTASK_COUNT=$(get_subtask_count "$PARENT_KEY")
+            echo "Branch: $BRANCH | Parent: $PARENT_KEY | Subtasks: $SUBTASK_COUNT"
+
+            if [ "$SUBTASK_COUNT" -gt 0 ] 2>/dev/null; then
+              echo "Parent has subtasks — moving parent to In Progress (idempotent)"
+              move_issue "$PARENT_KEY" "In Progress" "$IN_PROGRESS_TRANSITION_ID"
+            fi
+          fi
 
           COMMITS='${{ toJSON(github.event.commits.*.message) }}'
 
@@ -82,14 +105,14 @@ jobs:
             fi
           done
 
-  # --- On PR Merge: Move ALL subtasks to Staging ---
+  # --- On PR Merge to develop: Move subtasks to Staging (skip parent with subtasks) ---
   on-pr-merge:
     if: >
       github.event_name == 'pull_request' &&
       github.event.pull_request.merged == true
     runs-on: ubuntu-latest
     steps:
-      - name: Move all subtasks to Staging
+      - name: Move subtasks to Staging (skip parent with subtasks)
         env:
           JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
           JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
@@ -107,7 +130,6 @@ jobs:
           echo "Parent: $PARENT_KEY"
           echo "Branch: $BRANCH"
 
-          # Fetch subtasks
           JQL=$(python3 -c "import urllib.parse; print(urllib.parse.quote('parent=$PARENT_KEY'))")
           SUBTASKS=$(curl -s -u "$JIRA_EMAIL:$JIRA_API_TOKEN" \
             "$JIRA_BASE_URL/rest/api/3/search/jql?jql=${JQL}&fields=status,summary")
@@ -122,42 +144,43 @@ jobs:
             TOTAL=$(echo "$SUBTASKS" | jq -r '.total // 0')
           fi
 
-          # Move each subtask to Staging
-          echo "$SUBTASKS" | jq -r '.issues[] | .key' | while read KEY; do
+          if [ "$TOTAL" -gt 0 ]; then
+            echo "$SUBTASKS" | jq -r '.issues[] | .key' | while read KEY; do
+              HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+                -u "$JIRA_EMAIL:$JIRA_API_TOKEN" \
+                -H "Content-Type: application/json" \
+                -d "{\"transition\":{\"id\":\"$STAGING_TRANSITION_ID\"}}" \
+                "$JIRA_BASE_URL/rest/api/3/issue/$KEY/transitions")
+
+              if [ "$HTTP_CODE" = "204" ]; then
+                echo "  -> $KEY → Staging"
+              else
+                echo "  -> $KEY failed (HTTP $HTTP_CODE)"
+              fi
+            done
+            echo "Skipping parent $PARENT_KEY (has subtasks — only uses To Do / In Progress / Done)"
+          else
             HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
               -u "$JIRA_EMAIL:$JIRA_API_TOKEN" \
               -H "Content-Type: application/json" \
               -d "{\"transition\":{\"id\":\"$STAGING_TRANSITION_ID\"}}" \
-              "$JIRA_BASE_URL/rest/api/3/issue/$KEY/transitions")
+              "$JIRA_BASE_URL/rest/api/3/issue/$PARENT_KEY/transitions")
 
             if [ "$HTTP_CODE" = "204" ]; then
-              echo "  -> $KEY → Staging"
+              echo "  -> $PARENT_KEY → Staging (standalone issue, no subtasks)"
             else
-              echo "  -> $KEY failed (HTTP $HTTP_CODE)"
+              echo "  -> $PARENT_KEY failed (HTTP $HTTP_CODE)"
             fi
-          done
-
-          # Move parent to Staging too
-          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
-            -u "$JIRA_EMAIL:$JIRA_API_TOKEN" \
-            -H "Content-Type: application/json" \
-            -d "{\"transition\":{\"id\":\"$STAGING_TRANSITION_ID\"}}" \
-            "$JIRA_BASE_URL/rest/api/3/issue/$PARENT_KEY/transitions")
-
-          if [ "$HTTP_CODE" = "204" ]; then
-            echo "  -> $PARENT_KEY → Staging"
-          else
-            echo "  -> $PARENT_KEY failed (HTTP $HTTP_CODE)"
           fi
 
-  # --- On Production Deploy: Move subtasks to Production → Done ---
+  # --- On Production Deploy: Move specified subtasks to Production → Done ---
   on-deploy-prod:
     if: >
       github.event_name == 'workflow_dispatch' &&
       github.event.inputs.deploy_env == 'production'
     runs-on: ubuntu-latest
     steps:
-      - name: Move subtasks to Production then Done
+      - name: Move subtasks to Production then Done, check parent completion
         env:
           JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
           JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
@@ -173,6 +196,8 @@ jobs:
 
           echo "Releasing subtasks: $SUBTASK_KEYS"
 
+          PARENT_KEYS=""
+
           IFS=',' read -ra KEYS <<< "$SUBTASK_KEYS"
 
           for KEY in "${KEYS[@]}"; do
@@ -181,7 +206,6 @@ jobs:
 
             echo "--- $KEY ---"
 
-            # Move to Production
             HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
               -u "$JIRA_EMAIL:$JIRA_API_TOKEN" \
               -H "Content-Type: application/json" \
@@ -194,7 +218,6 @@ jobs:
               echo "  -> $KEY → Production failed (HTTP $HTTP_CODE)"
             fi
 
-            # Move to Done
             HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
               -u "$JIRA_EMAIL:$JIRA_API_TOKEN" \
               -H "Content-Type: application/json" \
@@ -205,5 +228,52 @@ jobs:
               echo "  -> $KEY → Done"
             else
               echo "  -> $KEY → Done failed (HTTP $HTTP_CODE)"
+            fi
+
+            PARENT_RESPONSE=$(curl -s -u "$JIRA_EMAIL:$JIRA_API_TOKEN" \
+              "$JIRA_BASE_URL/rest/api/3/issue/$KEY?fields=parent")
+            PARENT_KEY=$(echo "$PARENT_RESPONSE" | jq -r '.fields.parent.key // empty')
+
+            if [ -n "$PARENT_KEY" ]; then
+              if ! echo "$PARENT_KEYS" | grep -q "$PARENT_KEY"; then
+                PARENT_KEYS="${PARENT_KEYS}${PARENT_KEYS:+ }${PARENT_KEY}"
+              fi
+            fi
+          done
+
+          for PARENT in $PARENT_KEYS; do
+            echo ""
+            echo "=== Checking parent $PARENT completion ==="
+
+            JQL=$(python3 -c "import urllib.parse; print(urllib.parse.quote('parent=$PARENT AND statusCategory != Done'))")
+            REMAINING=$(curl -s -u "$JIRA_EMAIL:$JIRA_API_TOKEN" \
+              "$JIRA_BASE_URL/rest/api/3/search/jql?jql=${JQL}&fields=status,summary")
+
+            NOT_DONE=$(echo "$REMAINING" | jq -r '.total // 0')
+            echo "  Subtasks not yet Done: $NOT_DONE"
+
+            if [ "$NOT_DONE" = "0" ]; then
+              echo "  All subtasks completed! Moving parent $PARENT to Done."
+
+              HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+                -u "$JIRA_EMAIL:$JIRA_API_TOKEN" \
+                -H "Content-Type: application/json" \
+                -d "{\"transition\":{\"id\":\"$DONE_TRANSITION_ID\"}}" \
+                "$JIRA_BASE_URL/rest/api/3/issue/$PARENT/transitions")
+
+              if [ "$HTTP_CODE" = "204" ]; then
+                echo "  -> $PARENT → Done"
+              else
+                echo "  -> $PARENT → Done failed (HTTP $HTTP_CODE)"
+              fi
+
+              curl -s -o /dev/null \
+                -u "$JIRA_EMAIL:$JIRA_API_TOKEN" \
+                -H "Content-Type: application/json" \
+                -X POST \
+                "$JIRA_BASE_URL/rest/api/3/issue/$PARENT/comment" \
+                -d "{\"body\":{\"type\":\"doc\",\"version\":1,\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"All subtasks completed. Parent moved to Done automatically.\"}]}]}}"
+            else
+              echo "  Parent $PARENT NOT moved — $NOT_DONE subtask(s) still pending."
             fi
           done
