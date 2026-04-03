@@ -122,7 +122,6 @@ jobs:
               "$JIRA_BASE_URL/rest/api/3/search/jql?jql=${JQL}&fields=status,summary")
 
             echo "$SUBTASKS" | jq -r '.issues[] | .key' | while read KEY; do
-              # Only transition if this subtask was mentioned in the PR
               if echo "$MENTIONED_KEYS" | grep -qw "$KEY"; then
                 HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
                   -u "$JIRA_EMAIL:$JIRA_API_TOKEN" \
@@ -135,8 +134,6 @@ jobs:
                 else
                   echo "  -> $KEY failed (HTTP $HTTP_CODE)"
                 fi
-              else
-                echo "  -> $KEY skipped (no changes in this PR)"
               fi
             done
             echo "Skipping parent $PARENT_KEY (has subtasks — only uses To Do / In Progress)"
