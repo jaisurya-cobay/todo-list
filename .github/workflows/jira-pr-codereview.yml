@@ -13,14 +13,23 @@ jobs:
   transition-to-review:
     runs-on: ubuntu-latest
     steps:
-      - name: Extract Jira issue keys
+      - name: Checkout repo for commit history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Extract Jira subtask keys from PR and commits
         id: issues
         env:
           PR_TITLE: ${{ github.event.pull_request.title }}
           PR_BODY: ${{ github.event.pull_request.body }}
           BRANCH: ${{ github.event.pull_request.head.ref }}
         run: |
-          ALL_TEXT="${PR_TITLE} ${PR_BODY} ${BRANCH}"
+          PARENT_KEY=$(echo "$BRANCH" | grep -oE '[A-Z]+-[0-9]+' | head -1)
+
+          # Get commit messages from the PR branch
+          COMMIT_MSGS=$(git log origin/develop..HEAD --format=%s 2>/dev/null || echo "")
+          ALL_TEXT="${PR_TITLE} ${PR_BODY} ${COMMIT_MSGS}"
           KEYS=$(echo "$ALL_TEXT" | grep -oE '[A-Z]+-[0-9]+' | sort -u | tr '\n' ' ')
 
           if [ -z "$KEYS" ]; then
@@ -29,10 +38,11 @@ jobs:
           else
             echo "Found issue keys: ${KEYS}"
             echo "keys=${KEYS}" >> "$GITHUB_OUTPUT"
+            echo "parent_key=${PARENT_KEY}" >> "$GITHUB_OUTPUT"
             echo "found=true" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Transition issues to Review
+      - name: Transition referenced issues to Review
         if: steps.issues.outputs.found == 'true'
         env:
           JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
@@ -53,7 +63,7 @@ jobs:
               | jq '.fields.subtasks | length // 0')
 
             if [ "$SUBTASK_COUNT" -gt 0 ] 2>/dev/null; then
-              echo "  Skipping ${KEY} (parent with ${SUBTASK_COUNT} subtasks — only uses To Do / In Progress / Done)"
+              echo "  Skipping ${KEY} (parent with subtasks)"
               continue
             fi
 
@@ -67,7 +77,7 @@ jobs:
             if [ "$HTTP_CODE" = "204" ]; then
               echo "  -> ${KEY} → Review"
             else
-              echo "  -> ${KEY} transition failed (HTTP ${HTTP_CODE})"
+              echo "  -> ${KEY} failed (HTTP ${HTTP_CODE})"
             fi
 
             curl -s -o /dev/null \
