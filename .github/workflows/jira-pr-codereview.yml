@@ -1,4 +1,4 @@
-name: Jira - PR Opened → Code Review
+name: Jira - PR Opened → Review
 
 on:
   pull_request:
@@ -6,11 +6,11 @@ on:
     branches: [develop]
 
 concurrency:
-  group: jira-codereview-${{ github.event.pull_request.number }}
+  group: jira-review-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 jobs:
-  transition-to-code-review:
+  transition-to-review:
     runs-on: ubuntu-latest
     steps:
       - name: Extract Jira issue keys
@@ -32,13 +32,13 @@ jobs:
             echo "found=true" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Transition issues to Code Review
+      - name: Transition issues to Review
         if: steps.issues.outputs.found == 'true'
         env:
           JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
           JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
           JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
-          CODE_REVIEW_TRANSITION_ID: ${{ vars.JIRA_TRANSITION_CODE_REVIEW || '61' }}
+          REVIEW_TRANSITION_ID: ${{ vars.JIRA_TRANSITION_REVIEW || '61' }}
         run: |
           PR_NUM="${{ github.event.pull_request.number }}"
           PR_TITLE="${{ github.event.pull_request.title }}"
@@ -62,10 +62,10 @@ jobs:
               -H "Content-Type: application/json" \
               -X POST \
               "${JIRA_BASE_URL}/rest/api/3/issue/${KEY}/transitions" \
-              -d "{\"transition\":{\"id\":\"${CODE_REVIEW_TRANSITION_ID}\"}}")
+              -d "{\"transition\":{\"id\":\"${REVIEW_TRANSITION_ID}\"}}")
 
             if [ "$HTTP_CODE" = "204" ]; then
-              echo "  -> ${KEY} transitioned to Code Review"
+              echo "  -> ${KEY} → Review"
             else
               echo "  -> ${KEY} transition failed (HTTP ${HTTP_CODE})"
             fi
@@ -75,8 +75,8 @@ jobs:
               -H "Content-Type: application/json" \
               -X POST \
               "${JIRA_BASE_URL}/rest/api/3/issue/${KEY}/comment" \
-              -d "{\"body\":{\"type\":\"doc\",\"version\":1,\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"PR #${PR_NUM} opened by ${AUTHOR}\"},{\"type\":\"hardBreak\"},{\"type\":\"text\",\"text\":\"Title: ${PR_TITLE}\"},{\"type\":\"hardBreak\"},{\"type\":\"text\",\"text\":\"URL: ${PR_URL}\"},{\"type\":\"hardBreak\"},{\"type\":\"text\",\"text\":\"Status: Code Review\"}]}]}}"
+              -d "{\"body\":{\"type\":\"doc\",\"version\":1,\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"PR #${PR_NUM} opened by ${AUTHOR}\"},{\"type\":\"hardBreak\"},{\"type\":\"text\",\"text\":\"Title: ${PR_TITLE}\"},{\"type\":\"hardBreak\"},{\"type\":\"text\",\"text\":\"URL: ${PR_URL}\"},{\"type\":\"hardBreak\"},{\"type\":\"text\",\"text\":\"Status: Review\"}]}]}}"
           done
 
-          echo "### Jira Issues → Code Review" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Jira Issues → Review" >> "$GITHUB_STEP_SUMMARY"
           echo "Issues: ${{ steps.issues.outputs.keys }}" >> "$GITHUB_STEP_SUMMARY"

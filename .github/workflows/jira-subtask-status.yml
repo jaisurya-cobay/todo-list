@@ -78,12 +78,19 @@ jobs:
       github.event.pull_request.merged == true
     runs-on: ubuntu-latest
     steps:
-      - name: Move subtasks to Staging (skip parent with subtasks)
+      - name: Checkout repo for commit history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Move only referenced subtasks to Staging
         env:
           JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
           JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
           JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
           STAGING_TRANSITION_ID: ${{ vars.JIRA_TRANSITION_STAGING || '2' }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
         run: |
           BRANCH="${{ github.event.pull_request.head.ref }}"
           PARENT_KEY=$(echo "$BRANCH" | grep -oE '[A-Z]+-[0-9]+' | head -1)
@@ -96,35 +103,37 @@ jobs:
           echo "Parent: $PARENT_KEY"
           echo "Branch: $BRANCH"
 
-          JQL=$(python3 -c "import urllib.parse; print(urllib.parse.quote('parent=$PARENT_KEY'))")
-          SUBTASKS=$(curl -s -u "$JIRA_EMAIL:$JIRA_API_TOKEN" \
-            "$JIRA_BASE_URL/rest/api/3/search/jql?jql=${JQL}&fields=status,summary")
+          # Collect all Jira keys mentioned in PR title, body, and commit messages
+          MERGE_SHA="${{ github.event.pull_request.merge_commit_sha }}"
+          COMMIT_MSGS=$(git log --format=%s "$MERGE_SHA"^1.."$MERGE_SHA"^2 2>/dev/null || echo "")
+          ALL_TEXT="${PR_TITLE} ${PR_BODY} ${COMMIT_MSGS}"
+          MENTIONED_KEYS=$(echo "$ALL_TEXT" | grep -oE '[A-Z]+-[0-9]+' | sort -u | tr '\n' ' ')
+          echo "Keys mentioned in PR: $MENTIONED_KEYS"
 
-          TOTAL=$(echo "$SUBTASKS" | jq -r '.total // 0')
-          echo "Found $TOTAL subtasks under $PARENT_KEY"
-
-          # Double-check subtask count directly from the issue (more reliable than JQL)
+          # Check if parent has subtasks
           SUBTASK_COUNT=$(curl -s -u "$JIRA_EMAIL:$JIRA_API_TOKEN" \
             "$JIRA_BASE_URL/rest/api/3/issue/$PARENT_KEY?fields=subtasks" \
             | jq '.fields.subtasks | length // 0')
 
           if [ "$SUBTASK_COUNT" -gt 0 ] 2>/dev/null; then
-            # Parent has subtasks — move subtasks to Staging, skip parent entirely
+            # Parent has subtasks — only move subtasks that were mentioned in PR
             JQL=$(python3 -c "import urllib.parse; print(urllib.parse.quote('parent=$PARENT_KEY'))")
             SUBTASKS=$(curl -s -u "$JIRA_EMAIL:$JIRA_API_TOKEN" \
               "$JIRA_BASE_URL/rest/api/3/search/jql?jql=${JQL}&fields=status,summary")
 
             echo "$SUBTASKS" | jq -r '.issues[] | .key' | while read KEY; do
-              HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
-                -u "$JIRA_EMAIL:$JIRA_API_TOKEN" \
-                -H "Content-Type: application/json" \
-                -d "{\"transition\":{\"id\":\"$STAGING_TRANSITION_ID\"}}" \
-                "$JIRA_BASE_URL/rest/api/3/issue/$KEY/transitions")
+              if echo "$MENTIONED_KEYS" | grep -qw "$KEY"; then
+                HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+                  -u "$JIRA_EMAIL:$JIRA_API_TOKEN" \
+                  -H "Content-Type: application/json" \
+                  -d "{\"transition\":{\"id\":\"$STAGING_TRANSITION_ID\"}}" \
+                  "$JIRA_BASE_URL/rest/api/3/issue/$KEY/transitions")
 
-              if [ "$HTTP_CODE" = "204" ]; then
-                echo "  -> $KEY → Staging"
-              else
-                echo "  -> $KEY failed (HTTP $HTTP_CODE)"
+                if [ "$HTTP_CODE" = "204" ]; then
+                  echo "  -> $KEY → Staging"
+                else
+                  echo "  -> $KEY failed (HTTP $HTTP_CODE)"
+                fi
               fi
             done
             echo "Skipping parent $PARENT_KEY (has subtasks — only uses To Do / In Progress)"
