@@ -136,7 +136,7 @@ jobs:
                   echo "  -> $KEY failed (HTTP $HTTP_CODE)"
                 fi
               else
-                echo "  -> $KEY skipped (not mentioned in PR)"
+                echo "  -> $KEY skipped (no changes in this PR)"
               fi
             done
             echo "Skipping parent $PARENT_KEY (has subtasks — only uses To Do / In Progress)"
