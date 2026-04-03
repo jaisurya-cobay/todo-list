@@ -71,7 +71,7 @@ jobs:
             echo "  -> $PARENT_KEY → In Progress skipped/failed (HTTP $HTTP_CODE)"
           fi
 
-  # --- On PR Merge to develop: Move subtasks to Staging (skip parent with subtasks) ---
+  # --- On PR Merge to develop: Move referenced subtasks to Staging + Slack ---
   on-pr-merge:
     if: >
       github.event_name == 'pull_request' &&
@@ -84,6 +84,7 @@ jobs:
           fetch-depth: 0
 
       - name: Move only referenced subtasks to Staging
+        id: staging
         env:
           JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
           JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
@@ -97,6 +98,7 @@ jobs:
 
           if [ -z "$PARENT_KEY" ]; then
             echo "No Jira key found in branch: $BRANCH"
+            echo "found=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
@@ -109,6 +111,8 @@ jobs:
           ALL_TEXT="${PR_TITLE} ${PR_BODY} ${COMMIT_MSGS}"
           MENTIONED_KEYS=$(echo "$ALL_TEXT" | grep -oE '[A-Z]+-[0-9]+' | sort -u | tr '\n' ' ')
           echo "Keys mentioned in PR: $MENTIONED_KEYS"
+
+          TRANSITIONED_KEYS=""
 
           # Check if parent has subtasks
           SUBTASK_COUNT=$(curl -s -u "$JIRA_EMAIL:$JIRA_API_TOKEN" \
@@ -131,11 +135,28 @@ jobs:
 
                 if [ "$HTTP_CODE" = "204" ]; then
                   echo "  -> $KEY → Staging"
-                else
-                  echo "  -> $KEY failed (HTTP $HTTP_CODE)"
                 fi
               fi
             done
+
+            # Add Jira comment for each mentioned subtask
+            PR_NUM="${{ github.event.pull_request.number }}"
+            PR_TITLE_VAL="${{ github.event.pull_request.title }}"
+            MERGED_BY="${{ github.event.pull_request.merged_by.login }}"
+
+            for KEY in $MENTIONED_KEYS; do
+              if [ "$KEY" = "$PARENT_KEY" ]; then
+                continue
+              fi
+              curl -s -o /dev/null \
+                -u "$JIRA_EMAIL:$JIRA_API_TOKEN" \
+                -H "Content-Type: application/json" \
+                -X POST \
+                "$JIRA_BASE_URL/rest/api/3/issue/$KEY/comment" \
+                -d "{\"body\":{\"type\":\"doc\",\"version\":1,\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"PR #${PR_NUM} merged to develop by ${MERGED_BY}\"},{\"type\":\"hardBreak\"},{\"type\":\"text\",\"text\":\"Title: ${PR_TITLE_VAL}\"},{\"type\":\"hardBreak\"},{\"type\":\"text\",\"text\":\"Status: Deployed to Staging\"}]}]}}"
+            done
+
+            TRANSITIONED_KEYS="$MENTIONED_KEYS"
             echo "Skipping parent $PARENT_KEY (has subtasks — only uses To Do / In Progress)"
           else
             # Standalone story (no subtasks) — move to Staging
@@ -150,7 +171,93 @@ jobs:
             else
               echo "  -> $PARENT_KEY failed (HTTP $HTTP_CODE)"
             fi
+
+            # Add Jira comment
+            PR_NUM="${{ github.event.pull_request.number }}"
+            PR_TITLE_VAL="${{ github.event.pull_request.title }}"
+            MERGED_BY="${{ github.event.pull_request.merged_by.login }}"
+
+            curl -s -o /dev/null \
+              -u "$JIRA_EMAIL:$JIRA_API_TOKEN" \
+              -H "Content-Type: application/json" \
+              -X POST \
+              "$JIRA_BASE_URL/rest/api/3/issue/$PARENT_KEY/comment" \
+              -d "{\"body\":{\"type\":\"doc\",\"version\":1,\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"PR #${PR_NUM} merged to develop by ${MERGED_BY}\"},{\"type\":\"hardBreak\"},{\"type\":\"text\",\"text\":\"Title: ${PR_TITLE_VAL}\"},{\"type\":\"hardBreak\"},{\"type\":\"text\",\"text\":\"Status: Deployed to Staging\"}]}]}}"
+
+            TRANSITIONED_KEYS="$PARENT_KEY"
           fi
+
+          echo "keys=${TRANSITIONED_KEYS}" >> "$GITHUB_OUTPUT"
+          echo "found=true" >> "$GITHUB_OUTPUT"
+
+      - name: Notify Slack - Staging deployment
+        if: steps.staging.outputs.found == 'true'
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.STAGING_SLACK_WEBHOOK_URL }}
+          JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
+        run: |
+          PR_NUM="${{ github.event.pull_request.number }}"
+          PR_TITLE="${{ github.event.pull_request.title }}"
+          PR_URL="${{ github.event.pull_request.html_url }}"
+          MERGED_BY="${{ github.event.pull_request.merged_by.login }}"
+          BRANCH="${{ github.event.pull_request.head.ref }}"
+          IST_TIME=$(TZ='Asia/Kolkata' date "+%b %d, %Y %I:%M %p IST")
+          UTC_TIME=$(date -u "+%b %d, %Y %I:%M %p UTC")
+          KEYS="${{ steps.staging.outputs.keys }}"
+
+          # Build Jira links
+          JIRA_LINKS=""
+          for KEY in $KEYS; do
+            JIRA_LINKS+="<${JIRA_BASE_URL}/browse/${KEY}|${KEY}> "
+          done
+
+          curl -s -X POST -H "Content-Type: application/json" \
+            -d "{
+              \"blocks\": [
+                {
+                  \"type\": \"header\",
+                  \"text\": {
+                    \"type\": \"plain_text\",
+                    \"text\": \"Deployed to Staging\"
+                  }
+                },
+                {
+                  \"type\": \"section\",
+                  \"text\": {
+                    \"type\": \"mrkdwn\",
+                    \"text\": \"*PR merged to develop - moved to Staging*\"
+                  }
+                },
+                {\"type\": \"divider\"},
+                {
+                  \"type\": \"section\",
+                  \"fields\": [
+                    {\"type\": \"mrkdwn\", \"text\": \"*Repository:*\n<https://github.com/${{ github.repository }}|${{ github.repository }}>\"},
+                    {\"type\": \"mrkdwn\", \"text\": \"*PR:*\n<${PR_URL}|#${PR_NUM} ${PR_TITLE}>\"},
+                    {\"type\": \"mrkdwn\", \"text\": \"*Branch:*\n\`${BRANCH}\`\"},
+                    {\"type\": \"mrkdwn\", \"text\": \"*Merged by:*\n${MERGED_BY}\"},
+                    {\"type\": \"mrkdwn\", \"text\": \"*Jira Issues:*\n${JIRA_LINKS}\"},
+                    {\"type\": \"mrkdwn\", \"text\": \"*Status:*\n\`STAGING\`\"}
+                  ]
+                },
+                {\"type\": \"divider\"},
+                {
+                  \"type\": \"context\",
+                  \"elements\": [
+                    {
+                      \"type\": \"mrkdwn\",
+                      \"text\": \"${IST_TIME}  |  ${UTC_TIME}\"
+                    }
+                  ]
+                },
+                {
+                  \"type\": \"actions\",
+                  \"elements\": [
+                    {\"type\": \"button\", \"text\": {\"type\": \"plain_text\", \"text\": \"View PR\"}, \"url\": \"${PR_URL}\"}
+                  ]
+                }
+              ]
+            }" "$SLACK_WEBHOOK_URL"
 
   # --- On Production Deploy: Move specified subtasks to Production → Done ---
   on-deploy-prod:
