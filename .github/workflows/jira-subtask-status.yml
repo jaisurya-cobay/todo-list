@@ -1,12 +1,11 @@
 name: Jira - Subtask Status Automation
 
 # Smart parent-subtask workflow:
-#   Parent WITH subtasks: To Do → In Progress (first push) → Done (Jira Automation: when all subtasks Done)
-#   Parent WITHOUT subtasks: normal flow handled by other workflows
-#   Subtask: To Do → In Progress (manual) → Code Review (auto: PR opened) → Staging (auto: PR merged)
+#   Parent WITH subtasks: To Do → In Progress (first push) only. No Review/Staging/Production.
+#   Parent WITHOUT subtasks: To Do → In Progress (first push) → Review (PR opened) → Staging (PR merged) → Production (deploy) → Done
+#   Subtask: To Do → In Progress (manual) → Review (auto: PR opened) → Staging (auto: PR merged)
 #     → Production (auto: deploy/workflow_dispatch) → Done (manual)
-#   First push to parent branch → parent → In Progress (if it has subtasks)
-#   Jira Automation moves parent to Done when all subtasks are Done
+#   First push to any branch → story → In Progress (always, with or without subtasks)
 
 on:
   push:
@@ -56,21 +55,20 @@ jobs:
             "$JIRA_BASE_URL/rest/api/3/issue/$PARENT_KEY?fields=subtasks" \
             | jq '.fields.subtasks | length // 0')
 
-          echo "Branch: $BRANCH | Parent: $PARENT_KEY | Subtasks: $SUBTASK_COUNT"
+          echo "Branch: $BRANCH | Issue: $PARENT_KEY | Subtasks: $SUBTASK_COUNT"
 
-          if [ "$SUBTASK_COUNT" -gt 0 ] 2>/dev/null; then
-            echo "Parent has subtasks — moving parent to In Progress (idempotent)"
-            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
-              -u "$JIRA_EMAIL:$JIRA_API_TOKEN" \
-              -H "Content-Type: application/json" \
-              -d "{\"transition\":{\"id\":\"$IN_PROGRESS_TRANSITION_ID\"}}" \
-              "$JIRA_BASE_URL/rest/api/3/issue/$PARENT_KEY/transitions")
+          # Always move to In Progress on first push (both standalone stories and parents with subtasks)
+          echo "Moving $PARENT_KEY to In Progress (idempotent)"
+          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+            -u "$JIRA_EMAIL:$JIRA_API_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "{\"transition\":{\"id\":\"$IN_PROGRESS_TRANSITION_ID\"}}" \
+            "$JIRA_BASE_URL/rest/api/3/issue/$PARENT_KEY/transitions")
 
-            if [ "$HTTP_CODE" = "204" ]; then
-              echo "  -> $PARENT_KEY → In Progress"
-            else
-              echo "  -> $PARENT_KEY → In Progress skipped/failed (HTTP $HTTP_CODE)"
-            fi
+          if [ "$HTTP_CODE" = "204" ]; then
+            echo "  -> $PARENT_KEY → In Progress"
+          else
+            echo "  -> $PARENT_KEY → In Progress skipped/failed (HTTP $HTTP_CODE)"
           fi
 
   # --- On PR Merge to develop: Move subtasks to Staging (skip parent with subtasks) ---
