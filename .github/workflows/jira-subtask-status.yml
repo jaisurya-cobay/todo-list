@@ -85,7 +85,7 @@ jobs:
           JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
           JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
           JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
-          STAGING_TRANSITION_ID: ${{ vars.JIRA_TRANSITION_STAGING || '41' }}
+          STAGING_TRANSITION_ID: ${{ vars.JIRA_TRANSITION_STAGING || '2' }}
         run: |
           BRANCH="${{ github.event.pull_request.head.ref }}"
           PARENT_KEY=$(echo "$BRANCH" | grep -oE '[A-Z]+-[0-9]+' | head -1)
