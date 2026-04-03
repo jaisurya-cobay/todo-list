@@ -39,7 +39,7 @@ jobs:
           JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
           JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
           JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
-          STAGING_TRANSITION_ID: ${{ vars.JIRA_TRANSITION_STAGING || '41' }}
+          STAGING_TRANSITION_ID: ${{ vars.JIRA_TRANSITION_STAGING || '2' }}
         run: |
           PR_NUM="${{ github.event.pull_request.number }}"
           PR_TITLE="${{ github.event.pull_request.title }}"
