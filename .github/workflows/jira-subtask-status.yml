@@ -153,7 +153,7 @@ jobs:
           JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
           JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
           JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
-          PRODUCTION_TRANSITION_ID: ${{ vars.JIRA_TRANSITION_PRODUCTION || '51' }}
+          PRODUCTION_TRANSITION_ID: ${{ vars.JIRA_TRANSITION_PRODUCTION || '3' }}
           DONE_TRANSITION_ID: ${{ vars.JIRA_TRANSITION_DONE || '31' }}
           SUBTASK_KEYS: ${{ github.event.inputs.subtask_keys }}
         run: |

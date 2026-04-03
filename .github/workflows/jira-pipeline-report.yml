@@ -26,7 +26,7 @@ jobs:
           echo "| Status | Count | Tickets |" >> report.md
           echo "|--------|-------|---------|" >> report.md
 
-          for STATUS in "To Do" "In Progress" "Review" "Staging" "Prod" "Done"; do
+          for STATUS in "To Do" "In Progress" "Review" "Staging" "Production" "Done"; do
             ENCODED=$(echo "$STATUS" | sed 's/ /%20/g')
             RESPONSE=$(curl -s -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
               -H "Content-Type: application/json" \
@@ -51,7 +51,7 @@ jobs:
           echo "| Transition | Count | Tickets |" >> report.md
           echo "|-----------|-------|---------|" >> report.md
 
-          for STATUS in "In Progress" "Review" "Staging" "Prod" "Done"; do
+          for STATUS in "In Progress" "Review" "Staging" "Production" "Done"; do
             ENCODED=$(echo "$STATUS" | sed 's/ /%20/g')
             RESPONSE=$(curl -s -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
               -H "Content-Type: application/json" \
@@ -115,7 +115,7 @@ jobs:
 
           BOTTLENECK_FOUND=false
 
-          for STATUS in "In Progress" "Review" "Staging" "Prod"; do
+          for STATUS in "In Progress" "Review" "Staging" "Production"; do
             ENCODED=$(echo "$STATUS" | sed 's/ /%20/g')
             STUCK=$(curl -s -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
               -H "Content-Type: application/json" \
