@@ -105,14 +105,17 @@ jobs:
           TOTAL=$(echo "$SUBTASKS" | jq -r '.total // 0')
           echo "Found $TOTAL subtasks under $PARENT_KEY"
 
-          if [ "$TOTAL" = "0" ]; then
-            JQL2=$(python3 -c "import urllib.parse; print(urllib.parse.quote('parent = $PARENT_KEY'))")
-            SUBTASKS=$(curl -s -u "$JIRA_EMAIL:$JIRA_API_TOKEN" \
-              "$JIRA_BASE_URL/rest/api/3/search/jql?jql=${JQL2}&fields=status,summary")
-            TOTAL=$(echo "$SUBTASKS" | jq -r '.total // 0')
-          fi
+          # Double-check subtask count directly from the issue (more reliable than JQL)
+          SUBTASK_COUNT=$(curl -s -u "$JIRA_EMAIL:$JIRA_API_TOKEN" \
+            "$JIRA_BASE_URL/rest/api/3/issue/$PARENT_KEY?fields=subtasks" \
+            | jq '.fields.subtasks | length // 0')
 
-          if [ "$TOTAL" -gt 0 ]; then
+          if [ "$SUBTASK_COUNT" -gt 0 ] 2>/dev/null; then
+            # Parent has subtasks — move subtasks to Staging, skip parent entirely
+            JQL=$(python3 -c "import urllib.parse; print(urllib.parse.quote('parent=$PARENT_KEY'))")
+            SUBTASKS=$(curl -s -u "$JIRA_EMAIL:$JIRA_API_TOKEN" \
+              "$JIRA_BASE_URL/rest/api/3/search/jql?jql=${JQL}&fields=status,summary")
+
             echo "$SUBTASKS" | jq -r '.issues[] | .key' | while read KEY; do
               HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
                 -u "$JIRA_EMAIL:$JIRA_API_TOKEN" \
@@ -126,8 +129,9 @@ jobs:
                 echo "  -> $KEY failed (HTTP $HTTP_CODE)"
               fi
             done
-            echo "Skipping parent $PARENT_KEY (has subtasks — only uses To Do / In Progress / Done)"
+            echo "Skipping parent $PARENT_KEY (has subtasks — only uses To Do / In Progress)"
           else
+            # Standalone story (no subtasks) — move to Staging
             HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
               -u "$JIRA_EMAIL:$JIRA_API_TOKEN" \
               -H "Content-Type: application/json" \
