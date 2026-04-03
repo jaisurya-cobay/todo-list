@@ -371,31 +371,19 @@ jobs:
 
           NOTES+="\n**Deployed:** ${RELEASE_DATE}"
 
-          if git rev-parse "refs/tags/${RELEASE_TAG}" >/dev/null 2>&1; then
-            echo "Tag ${RELEASE_TAG} already exists locally, updating..."
-            git tag -d "${RELEASE_TAG}"
-          fi
-          git tag "${RELEASE_TAG}"
-
+          # If tag already exists, append short SHA to make it unique
           if git ls-remote --tags origin "refs/tags/${RELEASE_TAG}" | grep -q "${RELEASE_TAG}"; then
-            echo "Tag ${RELEASE_TAG} already exists on remote, force-pushing..."
-            git push origin "${RELEASE_TAG}" --force
-          else
-            git push origin "${RELEASE_TAG}"
+            RELEASE_TAG="${RELEASE_TAG}-${SHORT_SHA}"
+            echo "Tag already exists on remote, using unique tag: ${RELEASE_TAG}"
           fi
 
-          if gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
-            echo "Release ${RELEASE_TAG} already exists, updating..."
-            gh release edit "${RELEASE_TAG}" \
-              --title "${RELEASE_TAG} (${RELEASE_DATE})" \
-              --notes "$(echo -e "$NOTES")" \
-              --latest
-          else
-            gh release create "${RELEASE_TAG}" \
-              --title "${RELEASE_TAG} (${RELEASE_DATE})" \
-              --notes "$(echo -e "$NOTES")" \
-              --latest
-          fi
+          git tag "${RELEASE_TAG}"
+          git push origin "${RELEASE_TAG}"
+
+          gh release create "${RELEASE_TAG}" \
+            --title "${RELEASE_TAG} (${RELEASE_DATE})" \
+            --notes "$(echo -e "$NOTES")" \
+            --latest
 
           echo "### GitHub Release Created" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Tag:** ${RELEASE_TAG}" >> "$GITHUB_STEP_SUMMARY"
