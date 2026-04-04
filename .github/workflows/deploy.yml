@@ -431,17 +431,27 @@ jobs:
           REPO_URL="https://github.com/${REPO_NAME}"
           RELEASE_URL="${REPO_URL}/releases/tag/${RELEASE_TAG}"
 
+          # Use printf to create actual newlines (jq --arg treats \n as literal)
+          REPO_FIELD=$(printf '*Repository:*\n<%s|%s>' "$REPO_URL" "$REPO_NAME")
+          VERSION_FIELD=$(printf '*Release Version:*\n`%s`' "$RELEASE_TAG")
+          COMMIT_FIELD=$(printf '*Commit:*\n`%s`' "$SHORT_SHA")
+          TRIGGER_FIELD=$(printf '*Triggered by:*\n%s' "$ACTOR")
+          STATUS_FIELD=$(printf '*Status:*\n`%s`' "$STATUS_TEXT")
+          JIRA_FIELD=$(printf '*Jira Issues:*\n%s' "$JIRA_LINKS")
+          SUMMARY_TEXT=$(printf '*Release Summary: %s PRs from %s contributors*\n\n%s' "$PR_COUNT" "$AUTHOR_COUNT" "$PR_SUMMARY")
+          CONTENTS_TEXT=$(printf '*Release Contents (%s):*\n\n%s' "$RELEASE_TAG" "$RELEASE_ISSUES_SLACK")
+
           PAYLOAD=$(jq -n \
             --arg header "$HEADER" \
             --arg urgency "*${URGENCY}*" \
-            --arg repo_field "*Repository:*\n<${REPO_URL}|${REPO_NAME}>" \
-            --arg version_field "*Release Version:*\n\`${RELEASE_TAG}\`" \
-            --arg commit_field "*Commit:*\n\`${SHORT_SHA}\`" \
-            --arg trigger_field "*Triggered by:*\n${ACTOR}" \
-            --arg status_field "*Status:*\n\`${STATUS_TEXT}\`" \
-            --arg jira_field "*Jira Issues:*\n${JIRA_LINKS}" \
-            --arg summary "*Release Summary: ${PR_COUNT} PRs from ${AUTHOR_COUNT} contributors*\n\n${PR_SUMMARY}" \
-            --arg contents "*Release Contents (${RELEASE_TAG}):*\n\n${RELEASE_ISSUES_SLACK}" \
+            --arg repo_field "$REPO_FIELD" \
+            --arg version_field "$VERSION_FIELD" \
+            --arg commit_field "$COMMIT_FIELD" \
+            --arg trigger_field "$TRIGGER_FIELD" \
+            --arg status_field "$STATUS_FIELD" \
+            --arg jira_field "$JIRA_FIELD" \
+            --arg summary "$SUMMARY_TEXT" \
+            --arg contents "$CONTENTS_TEXT" \
             --arg context "${IST_TIME}  |  ${UTC_TIME}  |  Run #${RUN_NUMBER}" \
             --arg release_url "$RELEASE_URL" \
             '{blocks:[

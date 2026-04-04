@@ -221,13 +221,21 @@ jobs:
 
           REPO_URL="https://github.com/${REPO_NAME}"
 
+          # Use printf to create actual newlines (jq --arg treats \n as literal)
+          REPO_FIELD=$(printf '*Repository:*\n<%s|%s>' "$REPO_URL" "$REPO_NAME")
+          PR_FIELD=$(printf '*PR:*\n<%s|#%s %s>' "$PR_URL" "$PR_NUM" "$PR_TITLE")
+          BRANCH_FIELD=$(printf '*Branch:*\n`%s`' "$BRANCH")
+          MERGED_FIELD=$(printf '*Merged by:*\n%s' "$MERGED_BY")
+          JIRA_FIELD=$(printf '*Jira Issues:*\n%s' "$JIRA_LINKS")
+          STATUS_FIELD=$(printf '*Status:*\n`STAGING`')
+
           PAYLOAD=$(jq -n \
-            --arg repo_field "*Repository:*\n<${REPO_URL}|${REPO_NAME}>" \
-            --arg pr_field "*PR:*\n<${PR_URL}|#${PR_NUM} ${PR_TITLE}>" \
-            --arg branch_field "*Branch:*\n\`${BRANCH}\`" \
-            --arg merged_field "*Merged by:*\n${MERGED_BY}" \
-            --arg jira_field "*Jira Issues:*\n${JIRA_LINKS}" \
-            --arg status_field "*Status:*\n\`STAGING\`" \
+            --arg repo_field "$REPO_FIELD" \
+            --arg pr_field "$PR_FIELD" \
+            --arg branch_field "$BRANCH_FIELD" \
+            --arg merged_field "$MERGED_FIELD" \
+            --arg jira_field "$JIRA_FIELD" \
+            --arg status_field "$STATUS_FIELD" \
             --arg context "${IST_TIME}  |  ${UTC_TIME}" \
             --arg pr_url "$PR_URL" \
             '{blocks:[
