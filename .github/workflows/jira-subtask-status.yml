@@ -11,7 +11,7 @@ on:
   push:
     branches:
       - 'feature/**'
-      - 'XPRMNTS-*'
+      - '[A-Z][A-Z]*-[0-9]*'
   pull_request:
     types: [closed]
     branches:
@@ -42,8 +42,8 @@ jobs:
           JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
           JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
           IN_PROGRESS_TRANSITION_ID: ${{ vars.JIRA_TRANSITION_IN_PROGRESS || '21' }}
+          BRANCH: ${{ github.ref_name }}
         run: |
-          BRANCH="${{ github.ref_name }}"
           PARENT_KEY=$(echo "$BRANCH" | grep -oE '[A-Z]+-[0-9]+' | head -1)
 
           if [ -z "$PARENT_KEY" ]; then
@@ -92,8 +92,11 @@ jobs:
           STAGING_TRANSITION_ID: ${{ vars.JIRA_TRANSITION_STAGING || '2' }}
           PR_TITLE: ${{ github.event.pull_request.title }}
           PR_BODY: ${{ github.event.pull_request.body }}
+          BRANCH: ${{ github.event.pull_request.head.ref }}
+          MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+          PR_NUM: ${{ github.event.pull_request.number }}
+          MERGED_BY: ${{ github.event.pull_request.merged_by.login }}
         run: |
-          BRANCH="${{ github.event.pull_request.head.ref }}"
           PARENT_KEY=$(echo "$BRANCH" | grep -oE '[A-Z]+-[0-9]+' | head -1)
 
           if [ -z "$PARENT_KEY" ]; then
@@ -106,7 +109,6 @@ jobs:
           echo "Branch: $BRANCH"
 
           # Collect all Jira keys mentioned in PR title, body, and commit messages
-          MERGE_SHA="${{ github.event.pull_request.merge_commit_sha }}"
           COMMIT_MSGS=$(git log --format=%s "$MERGE_SHA"^1.."$MERGE_SHA"^2 2>/dev/null || echo "")
           ALL_TEXT="${PR_TITLE} ${PR_BODY} ${COMMIT_MSGS}"
           MENTIONED_KEYS=$(echo "$ALL_TEXT" | grep -oE '[A-Z]+-[0-9]+' | sort -u | tr '\n' ' ')
@@ -118,6 +120,15 @@ jobs:
           SUBTASK_COUNT=$(curl -s -u "$JIRA_EMAIL:$JIRA_API_TOKEN" \
             "$JIRA_BASE_URL/rest/api/3/issue/$PARENT_KEY?fields=subtasks" \
             | jq '.fields.subtasks | length // 0')
+
+          # Build safe Jira comment body
+          build_comment() {
+            jq -n \
+              --arg pr "PR #${PR_NUM} merged to develop by ${MERGED_BY}" \
+              --arg title "Title: ${PR_TITLE}" \
+              --arg status "Status: Deployed to Staging" \
+              '{body:{type:"doc",version:1,content:[{type:"paragraph",content:[{type:"text",text:$pr},{type:"hardBreak"},{type:"text",text:$title},{type:"hardBreak"},{type:"text",text:$status}]}]}}'
+          }
 
           if [ "$SUBTASK_COUNT" -gt 0 ] 2>/dev/null; then
             # Parent has subtasks — only move subtasks that were mentioned in PR
@@ -140,9 +151,7 @@ jobs:
             done
 
             # Add Jira comment for each mentioned subtask
-            PR_NUM="${{ github.event.pull_request.number }}"
-            PR_TITLE_VAL="${{ github.event.pull_request.title }}"
-            MERGED_BY="${{ github.event.pull_request.merged_by.login }}"
+            COMMENT_BODY=$(build_comment)
 
             for KEY in $MENTIONED_KEYS; do
               if [ "$KEY" = "$PARENT_KEY" ]; then
@@ -153,7 +162,7 @@ jobs:
                 -H "Content-Type: application/json" \
                 -X POST \
                 "$JIRA_BASE_URL/rest/api/3/issue/$KEY/comment" \
-                -d "{\"body\":{\"type\":\"doc\",\"version\":1,\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"PR #${PR_NUM} merged to develop by ${MERGED_BY}\"},{\"type\":\"hardBreak\"},{\"type\":\"text\",\"text\":\"Title: ${PR_TITLE_VAL}\"},{\"type\":\"hardBreak\"},{\"type\":\"text\",\"text\":\"Status: Deployed to Staging\"}]}]}}"
+                -d "$COMMENT_BODY"
             done
 
             TRANSITIONED_KEYS="$MENTIONED_KEYS"
@@ -173,16 +182,14 @@ jobs:
             fi
 
             # Add Jira comment
-            PR_NUM="${{ github.event.pull_request.number }}"
-            PR_TITLE_VAL="${{ github.event.pull_request.title }}"
-            MERGED_BY="${{ github.event.pull_request.merged_by.login }}"
+            COMMENT_BODY=$(build_comment)
 
             curl -s -o /dev/null \
               -u "$JIRA_EMAIL:$JIRA_API_TOKEN" \
               -H "Content-Type: application/json" \
               -X POST \
               "$JIRA_BASE_URL/rest/api/3/issue/$PARENT_KEY/comment" \
-              -d "{\"body\":{\"type\":\"doc\",\"version\":1,\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"PR #${PR_NUM} merged to develop by ${MERGED_BY}\"},{\"type\":\"hardBreak\"},{\"type\":\"text\",\"text\":\"Title: ${PR_TITLE_VAL}\"},{\"type\":\"hardBreak\"},{\"type\":\"text\",\"text\":\"Status: Deployed to Staging\"}]}]}}"
+              -d "$COMMENT_BODY"
 
             TRANSITIONED_KEYS="$PARENT_KEY"
           fi
@@ -195,69 +202,53 @@ jobs:
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.STAGING_SLACK_WEBHOOK_URL }}
           JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
+          PR_NUM: ${{ github.event.pull_request.number }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          MERGED_BY: ${{ github.event.pull_request.merged_by.login }}
+          BRANCH: ${{ github.event.pull_request.head.ref }}
+          ISSUE_KEYS: ${{ steps.staging.outputs.keys }}
+          REPO_NAME: ${{ github.repository }}
         run: |
-          PR_NUM="${{ github.event.pull_request.number }}"
-          PR_TITLE="${{ github.event.pull_request.title }}"
-          PR_URL="${{ github.event.pull_request.html_url }}"
-          MERGED_BY="${{ github.event.pull_request.merged_by.login }}"
-          BRANCH="${{ github.event.pull_request.head.ref }}"
           IST_TIME=$(TZ='Asia/Kolkata' date "+%b %d, %Y %I:%M %p IST")
           UTC_TIME=$(date -u "+%b %d, %Y %I:%M %p UTC")
-          KEYS="${{ steps.staging.outputs.keys }}"
 
           # Build Jira links
           JIRA_LINKS=""
-          for KEY in $KEYS; do
+          for KEY in $ISSUE_KEYS; do
             JIRA_LINKS+="<${JIRA_BASE_URL}/browse/${KEY}|${KEY}> "
           done
 
+          REPO_URL="https://github.com/${REPO_NAME}"
+
+          PAYLOAD=$(jq -n \
+            --arg repo_field "*Repository:*\n<${REPO_URL}|${REPO_NAME}>" \
+            --arg pr_field "*PR:*\n<${PR_URL}|#${PR_NUM} ${PR_TITLE}>" \
+            --arg branch_field "*Branch:*\n\`${BRANCH}\`" \
+            --arg merged_field "*Merged by:*\n${MERGED_BY}" \
+            --arg jira_field "*Jira Issues:*\n${JIRA_LINKS}" \
+            --arg status_field "*Status:*\n\`STAGING\`" \
+            --arg context "${IST_TIME}  |  ${UTC_TIME}" \
+            --arg pr_url "$PR_URL" \
+            '{blocks:[
+              {type:"header",text:{type:"plain_text",text:"Deployed to Staging"}},
+              {type:"section",text:{type:"mrkdwn",text:"*PR merged to develop - moved to Staging*"}},
+              {type:"divider"},
+              {type:"section",fields:[
+                {type:"mrkdwn",text:$repo_field},
+                {type:"mrkdwn",text:$pr_field},
+                {type:"mrkdwn",text:$branch_field},
+                {type:"mrkdwn",text:$merged_field},
+                {type:"mrkdwn",text:$jira_field},
+                {type:"mrkdwn",text:$status_field}
+              ]},
+              {type:"divider"},
+              {type:"context",elements:[{type:"mrkdwn",text:$context}]},
+              {type:"actions",elements:[{type:"button",text:{type:"plain_text",text:"View PR"},url:$pr_url}]}
+            ]}')
+
           curl -s -X POST -H "Content-Type: application/json" \
-            -d "{
-              \"blocks\": [
-                {
-                  \"type\": \"header\",
-                  \"text\": {
-                    \"type\": \"plain_text\",
-                    \"text\": \"Deployed to Staging\"
-                  }
-                },
-                {
-                  \"type\": \"section\",
-                  \"text\": {
-                    \"type\": \"mrkdwn\",
-                    \"text\": \"*PR merged to develop - moved to Staging*\"
-                  }
-                },
-                {\"type\": \"divider\"},
-                {
-                  \"type\": \"section\",
-                  \"fields\": [
-                    {\"type\": \"mrkdwn\", \"text\": \"*Repository:*\n<https://github.com/${{ github.repository }}|${{ github.repository }}>\"},
-                    {\"type\": \"mrkdwn\", \"text\": \"*PR:*\n<${PR_URL}|#${PR_NUM} ${PR_TITLE}>\"},
-                    {\"type\": \"mrkdwn\", \"text\": \"*Branch:*\n\`${BRANCH}\`\"},
-                    {\"type\": \"mrkdwn\", \"text\": \"*Merged by:*\n${MERGED_BY}\"},
-                    {\"type\": \"mrkdwn\", \"text\": \"*Jira Issues:*\n${JIRA_LINKS}\"},
-                    {\"type\": \"mrkdwn\", \"text\": \"*Status:*\n\`STAGING\`\"}
-                  ]
-                },
-                {\"type\": \"divider\"},
-                {
-                  \"type\": \"context\",
-                  \"elements\": [
-                    {
-                      \"type\": \"mrkdwn\",
-                      \"text\": \"${IST_TIME}  |  ${UTC_TIME}\"
-                    }
-                  ]
-                },
-                {
-                  \"type\": \"actions\",
-                  \"elements\": [
-                    {\"type\": \"button\", \"text\": {\"type\": \"plain_text\", \"text\": \"View PR\"}, \"url\": \"${PR_URL}\"}
-                  ]
-                }
-              ]
-            }" "$SLACK_WEBHOOK_URL"
+            -d "$PAYLOAD" "$SLACK_WEBHOOK_URL"
 
   # --- On Production Deploy: Move specified subtasks to Production → Done ---
   on-deploy-prod:
@@ -272,7 +263,6 @@ jobs:
           JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
           JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
           PRODUCTION_TRANSITION_ID: ${{ vars.JIRA_TRANSITION_PRODUCTION || '3' }}
-          DONE_TRANSITION_ID: ${{ vars.JIRA_TRANSITION_DONE || '31' }}
           SUBTASK_KEYS: ${{ github.event.inputs.subtask_keys }}
         run: |
           if [ -z "$SUBTASK_KEYS" ]; then
@@ -289,6 +279,12 @@ jobs:
           for KEY in "${KEYS[@]}"; do
             KEY=$(echo "$KEY" | xargs)
             [ -z "$KEY" ] && continue
+
+            # Validate Jira key format
+            if ! echo "$KEY" | grep -qE '^[A-Z]+-[0-9]+$'; then
+              echo "  -> Skipping invalid key: $KEY"
+              continue
+            fi
 
             echo "--- $KEY ---"
 

@@ -2,7 +2,7 @@ name: Weekly Jira Pipeline Report
 
 on:
   schedule:
-    - cron: "0 9 * * 1" # Every Monday 9 AM UTC
+    - cron: "30 3 * * 1" # Every Monday 9:00 AM IST (3:30 AM UTC)
   workflow_dispatch:
 
 permissions:
@@ -143,10 +143,11 @@ jobs:
       - name: Create GitHub issue with report
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO_NAME: ${{ github.repository }}
         run: |
           DATE=$(date +%Y-%m-%d)
           gh issue create \
             --title "Pipeline Report - ${DATE}" \
             --body "$(cat report.md)" \
             --label "report" \
-            --repo "${{ github.repository }}" 2>/dev/null || echo "Note: 'report' label may need to be created"
+            --repo "${REPO_NAME}" 2>/dev/null || echo "Note: 'report' label may need to be created"
