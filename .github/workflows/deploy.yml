@@ -18,7 +18,6 @@ jobs:
     env:
       JIRA_PROJECT_KEY: ${{ vars.JIRA_PROJECT_KEY || 'XPRMNTS' }}
       PRODUCTION_TRANSITION_ID: ${{ vars.JIRA_TRANSITION_PRODUCTION || '3' }}
-      DONE_TRANSITION_ID: ${{ vars.JIRA_TRANSITION_DONE || '31' }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -238,41 +237,12 @@ jobs:
           echo -e "$ISSUE_SUMMARY" >> "$GITHUB_OUTPUT"
           echo "EOFSLACK" >> "$GITHUB_OUTPUT"
 
-      - name: Transition standalone issues to Done (subtasks stay at Production)
+      - name: Log Production status (Done is manual for all issues)
         if: steps.issues.outputs.found == 'true'
-        env:
-          JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
-          JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
-          JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
         run: |
-          TRANSITIONED="${{ steps.prod_transition.outputs.transitioned_keys }}"
-
-          for KEY in $TRANSITIONED; do
-            # Check if this issue has a parent (i.e. it's a subtask)
-            PARENT_KEY=$(curl -s -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
-              "${JIRA_BASE_URL}/rest/api/3/issue/${KEY}?fields=parent" \
-              | jq -r '.fields.parent.key // empty')
-
-            if [ -n "$PARENT_KEY" ]; then
-              echo "  -> ${KEY} is a subtask — staying at Production (manual Done required)"
-              continue
-            fi
-
-            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
-              -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
-              -H "Content-Type: application/json" \
-              -X POST \
-              "${JIRA_BASE_URL}/rest/api/3/issue/${KEY}/transitions" \
-              -d "{\"transition\":{\"id\":\"${DONE_TRANSITION_ID}\"}}")
-
-            if [ "$HTTP_CODE" = "204" ]; then
-              echo "  -> ${KEY} transitioned to Done (standalone issue)"
-            else
-              echo "  -> ${KEY} Done transition failed (HTTP ${HTTP_CODE})"
-            fi
-          done
-
-          echo "### Jira Issues → Done (standalone only, subtasks stay at Production)" >> "$GITHUB_STEP_SUMMARY"
+          echo "All transitioned issues stay at Production — Done transition is manual."
+          echo "### Jira Issues at Production (Done is manual)" >> "$GITHUB_STEP_SUMMARY"
+          echo "Transitioned: ${{ steps.prod_transition.outputs.transitioned_keys }}" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Collect merged PRs since last release
         id: prs
