@@ -49,13 +49,13 @@ jobs:
           JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
           JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
           REVIEW_TRANSITION_ID: ${{ vars.JIRA_TRANSITION_REVIEW || '61' }}
+          PR_NUM: ${{ github.event.pull_request.number }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          AUTHOR: ${{ github.event.pull_request.user.login }}
+          ISSUE_KEYS: ${{ steps.issues.outputs.keys }}
         run: |
-          PR_NUM="${{ github.event.pull_request.number }}"
-          PR_TITLE="${{ github.event.pull_request.title }}"
-          PR_URL="${{ github.event.pull_request.html_url }}"
-          AUTHOR="${{ github.event.pull_request.user.login }}"
-
-          for KEY in ${{ steps.issues.outputs.keys }}; do
+          for KEY in $ISSUE_KEYS; do
             echo "Processing ${KEY}..."
 
             SUBTASK_COUNT=$(curl -s -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
@@ -80,13 +80,20 @@ jobs:
               echo "  -> ${KEY} failed (HTTP ${HTTP_CODE})"
             fi
 
+            COMMENT_BODY=$(jq -n \
+              --arg pr "PR #${PR_NUM} opened by ${AUTHOR}" \
+              --arg title "Title: ${PR_TITLE}" \
+              --arg url "URL: ${PR_URL}" \
+              --arg status "Status: Review" \
+              '{body:{type:"doc",version:1,content:[{type:"paragraph",content:[{type:"text",text:$pr},{type:"hardBreak"},{type:"text",text:$title},{type:"hardBreak"},{type:"text",text:$url},{type:"hardBreak"},{type:"text",text:$status}]}]}}')
+
             curl -s -o /dev/null \
               -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
               -H "Content-Type: application/json" \
               -X POST \
               "${JIRA_BASE_URL}/rest/api/3/issue/${KEY}/comment" \
-              -d "{\"body\":{\"type\":\"doc\",\"version\":1,\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"PR #${PR_NUM} opened by ${AUTHOR}\"},{\"type\":\"hardBreak\"},{\"type\":\"text\",\"text\":\"Title: ${PR_TITLE}\"},{\"type\":\"hardBreak\"},{\"type\":\"text\",\"text\":\"URL: ${PR_URL}\"},{\"type\":\"hardBreak\"},{\"type\":\"text\",\"text\":\"Status: Review\"}]}]}}"
+              -d "$COMMENT_BODY"
           done
 
           echo "### Jira Issues → Review" >> "$GITHUB_STEP_SUMMARY"
-          echo "Issues: ${{ steps.issues.outputs.keys }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "Issues: ${ISSUE_KEYS}" >> "$GITHUB_STEP_SUMMARY"

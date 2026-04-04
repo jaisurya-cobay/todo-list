@@ -2,7 +2,7 @@ name: Weekly Dev Metrics (DORA)
 
 on:
   schedule:
-    - cron: "0 9 * * 1" # Every Monday 9 AM UTC
+    - cron: "30 3 * * 1" # Every Monday 9:00 AM IST (3:30 AM UTC)
   workflow_dispatch:
 
 permissions:
@@ -19,6 +19,7 @@ jobs:
       JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
       JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
       JIRA_PROJECT_KEY: ${{ vars.JIRA_PROJECT_KEY || 'XPRMNTS' }}
+      REPO_NAME: ${{ github.repository }}
     steps:
       - uses: actions/checkout@v4
 
@@ -26,7 +27,7 @@ jobs:
         id: pr_metrics
         run: |
           SINCE=$(date -d '7 days ago' +%Y-%m-%dT00:00:00Z 2>/dev/null || date -v-7d +%Y-%m-%dT00:00:00Z)
-          REPO="${{ github.repository }}"
+          REPO="${REPO_NAME}"
 
           echo "## PR Metrics (Last 7 Days)" >> metrics_report.md
           echo "" >> metrics_report.md
@@ -59,7 +60,7 @@ jobs:
       - name: Collect Deployment Metrics
         run: |
           SINCE=$(date -d '7 days ago' +%Y-%m-%dT00:00:00Z 2>/dev/null || date -v-7d +%Y-%m-%dT00:00:00Z)
-          REPO="${{ github.repository }}"
+          REPO="${REPO_NAME}"
 
           echo "## Deployment Metrics (Last 7 Days)" >> metrics_report.md
           echo "" >> metrics_report.md
