@@ -41,7 +41,7 @@ jobs:
           JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
           JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
           JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
-          IN_PROGRESS_TRANSITION_ID: ${{ vars.JIRA_TRANSITION_IN_PROGRESS || '21' }}
+          IN_PROGRESS_TRANSITION_ID: ${{ vars.JIRA_TRANSITION_IN_PROGRESS }}
           BRANCH: ${{ github.ref_name }}
         run: |
           PARENT_KEY=$(echo "$BRANCH" | grep -oE '[A-Z]+-[0-9]+' | head -1)
@@ -89,7 +89,7 @@ jobs:
           JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
           JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
           JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
-          STAGING_TRANSITION_ID: ${{ vars.JIRA_TRANSITION_STAGING || '2' }}
+          STAGING_TRANSITION_ID: ${{ vars.JIRA_TRANSITION_STAGING }}
           PR_TITLE: ${{ github.event.pull_request.title }}
           PR_BODY: ${{ github.event.pull_request.body }}
           BRANCH: ${{ github.event.pull_request.head.ref }}
@@ -270,7 +270,7 @@ jobs:
           JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
           JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
           JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
-          PRODUCTION_TRANSITION_ID: ${{ vars.JIRA_TRANSITION_PRODUCTION || '3' }}
+          PRODUCTION_TRANSITION_ID: ${{ vars.JIRA_TRANSITION_PRODUCTION }}
           SUBTASK_KEYS: ${{ github.event.inputs.subtask_keys }}
         run: |
           if [ -z "$SUBTASK_KEYS" ]; then

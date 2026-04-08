@@ -16,8 +16,8 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     env:
-      JIRA_PROJECT_KEY: ${{ vars.JIRA_PROJECT_KEY || 'XPRMNTS' }}
-      PRODUCTION_TRANSITION_ID: ${{ vars.JIRA_TRANSITION_PRODUCTION || '3' }}
+      JIRA_PROJECT_KEY: ${{ vars.JIRA_PROJECT_KEY }}
+      PRODUCTION_TRANSITION_ID: ${{ vars.JIRA_TRANSITION_PRODUCTION }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4

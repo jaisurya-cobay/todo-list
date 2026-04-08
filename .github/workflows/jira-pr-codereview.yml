@@ -48,7 +48,7 @@ jobs:
           JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
           JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
           JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
-          REVIEW_TRANSITION_ID: ${{ vars.JIRA_TRANSITION_REVIEW || '61' }}
+          REVIEW_TRANSITION_ID: ${{ vars.JIRA_TRANSITION_REVIEW }}
           PR_NUM: ${{ github.event.pull_request.number }}
           PR_TITLE: ${{ github.event.pull_request.title }}
           PR_URL: ${{ github.event.pull_request.html_url }}
