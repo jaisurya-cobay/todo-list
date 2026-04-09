@@ -1,23 +1,371 @@
-name: Deploy to Production
+name: Jira Pipeline Automation
+
+# Combined workflow: subtask status + deploy + PR code review
+#
+# Lifecycle:
+#   Push to feature branch     -> Parent issue -> In Progress
+#   PR opened to develop       -> Referenced issues -> Review
+#   PR merged to develop       -> Referenced subtasks -> Staging + Slack
+#   Push to master             -> Deploy to Production + GitHub Release + Slack
+#   workflow_dispatch           -> Specified subtasks -> Production
 
 on:
   push:
     branches:
       - master
+      - 'feature/**'
+      - '[A-Z][A-Z]*-[0-9]*'
+  pull_request:
+    types: [opened, reopened, closed]
+    branches:
+      - develop
+  workflow_dispatch:
+    inputs:
+      deploy_env:
+        description: 'Deployment environment'
+        required: true
+        type: choice
+        options:
+          - production
+      subtask_keys:
+        description: 'Subtask keys (comma separated, e.g. PROJ-61,PROJ-62).'
+        required: true
+        type: string
 
 permissions:
   contents: write
 
-concurrency:
-  group: production-deploy
-  cancel-in-progress: false
-
 jobs:
-  deploy:
+
+  # ============================================================
+  # ON COMMIT: Move parent to In Progress (feature branch push)
+  # ============================================================
+  on-commit:
+    if: github.event_name == 'push' && github.ref_name != 'master'
     runs-on: ubuntu-latest
+    steps:
+      - name: Move parent to In Progress on first push
+        env:
+          JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
+          JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
+          JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+          IN_PROGRESS_TRANSITION_ID: ${{ vars.JIRA_TRANSITION_IN_PROGRESS }}
+          BRANCH: ${{ github.ref_name }}
+        run: |
+          PARENT_KEY=$(echo "$BRANCH" | grep -oE '[A-Z]+-[0-9]+' | head -1)
+
+          if [ -z "$PARENT_KEY" ]; then
+            echo "No Jira key found in branch: $BRANCH"
+            exit 0
+          fi
+
+          SUBTASK_COUNT=$(curl -s -u "$JIRA_EMAIL:$JIRA_API_TOKEN" \
+            "$JIRA_BASE_URL/rest/api/3/issue/$PARENT_KEY?fields=subtasks" \
+            | jq '.fields.subtasks | length // 0')
+
+          echo "Branch: $BRANCH | Issue: $PARENT_KEY | Subtasks: $SUBTASK_COUNT"
+
+          echo "Moving $PARENT_KEY to In Progress (idempotent)"
+          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+            -u "$JIRA_EMAIL:$JIRA_API_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "{\"transition\":{\"id\":\"$IN_PROGRESS_TRANSITION_ID\"}}" \
+            "$JIRA_BASE_URL/rest/api/3/issue/$PARENT_KEY/transitions")
+
+          if [ "$HTTP_CODE" = "204" ]; then
+            echo "  -> $PARENT_KEY -> In Progress"
+          else
+            echo "  -> $PARENT_KEY -> In Progress skipped/failed (HTTP $HTTP_CODE)"
+          fi
+
+  # ============================================================
+  # ON PR OPENED: Move referenced issues to Review
+  # ============================================================
+  on-pr-review:
+    if: >
+      github.event_name == 'pull_request' &&
+      github.event.action != 'closed'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: jira-review-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
+    steps:
+      - name: Checkout repo for commit history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Extract Jira subtask keys from PR and commits
+        id: issues
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          BRANCH: ${{ github.event.pull_request.head.ref }}
+        run: |
+          PARENT_KEY=$(echo "$BRANCH" | grep -oE '[A-Z]+-[0-9]+' | head -1)
+
+          COMMIT_MSGS=$(git log origin/develop..HEAD --format=%s 2>/dev/null || echo "")
+          ALL_TEXT="${PR_TITLE} ${PR_BODY} ${COMMIT_MSGS}"
+          KEYS=$(echo "$ALL_TEXT" | grep -oE '[A-Z]+-[0-9]+' | sort -u | tr '\n' ' ')
+
+          if [ -z "$KEYS" ]; then
+            echo "No Jira issue keys found. Skipping."
+            echo "found=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Found issue keys: ${KEYS}"
+            echo "keys=${KEYS}" >> "$GITHUB_OUTPUT"
+            echo "parent_key=${PARENT_KEY}" >> "$GITHUB_OUTPUT"
+            echo "found=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Transition referenced issues to Review
+        if: steps.issues.outputs.found == 'true'
+        env:
+          JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
+          JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
+          JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+          REVIEW_TRANSITION_ID: ${{ vars.JIRA_TRANSITION_REVIEW }}
+          PR_NUM: ${{ github.event.pull_request.number }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          AUTHOR: ${{ github.event.pull_request.user.login }}
+          ISSUE_KEYS: ${{ steps.issues.outputs.keys }}
+        run: |
+          for KEY in $ISSUE_KEYS; do
+            echo "Processing ${KEY}..."
+
+            SUBTASK_COUNT=$(curl -s -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
+              "${JIRA_BASE_URL}/rest/api/3/issue/${KEY}?fields=subtasks" \
+              | jq '.fields.subtasks | length // 0')
+
+            if [ "$SUBTASK_COUNT" -gt 0 ] 2>/dev/null; then
+              echo "  Skipping ${KEY} (parent with subtasks)"
+              continue
+            fi
+
+            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+              -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
+              -H "Content-Type: application/json" \
+              -X POST \
+              "${JIRA_BASE_URL}/rest/api/3/issue/${KEY}/transitions" \
+              -d "{\"transition\":{\"id\":\"${REVIEW_TRANSITION_ID}\"}}")
+
+            if [ "$HTTP_CODE" = "204" ]; then
+              echo "  -> ${KEY} -> Review"
+            else
+              echo "  -> ${KEY} failed (HTTP ${HTTP_CODE})"
+            fi
+
+            COMMENT_BODY=$(jq -n \
+              --arg pr "PR #${PR_NUM} opened by ${AUTHOR}" \
+              --arg title "Title: ${PR_TITLE}" \
+              --arg url "URL: ${PR_URL}" \
+              --arg status "Status: Review" \
+              '{body:{type:"doc",version:1,content:[{type:"paragraph",content:[{type:"text",text:$pr},{type:"hardBreak"},{type:"text",text:$title},{type:"hardBreak"},{type:"text",text:$url},{type:"hardBreak"},{type:"text",text:$status}]}]}}')
+
+            curl -s -o /dev/null \
+              -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
+              -H "Content-Type: application/json" \
+              -X POST \
+              "${JIRA_BASE_URL}/rest/api/3/issue/${KEY}/comment" \
+              -d "$COMMENT_BODY"
+          done
+
+          echo "### Jira Issues -> Review" >> "$GITHUB_STEP_SUMMARY"
+          echo "Issues: ${ISSUE_KEYS}" >> "$GITHUB_STEP_SUMMARY"
+
+  # ============================================================
+  # ON PR MERGE: Move referenced subtasks to Staging + Slack
+  # ============================================================
+  on-pr-merge:
+    if: >
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo for commit history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Move only referenced subtasks to Staging
+        id: staging
+        env:
+          JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
+          JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
+          JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+          STAGING_TRANSITION_ID: ${{ vars.JIRA_TRANSITION_STAGING }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          BRANCH: ${{ github.event.pull_request.head.ref }}
+          MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+          PR_NUM: ${{ github.event.pull_request.number }}
+          MERGED_BY: ${{ github.event.pull_request.merged_by.login }}
+        run: |
+          PARENT_KEY=$(echo "$BRANCH" | grep -oE '[A-Z]+-[0-9]+' | head -1)
+
+          if [ -z "$PARENT_KEY" ]; then
+            echo "No Jira key found in branch: $BRANCH"
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "Parent: $PARENT_KEY"
+          echo "Branch: $BRANCH"
+
+          COMMIT_MSGS=$(git log --format=%s "$MERGE_SHA"^1.."$MERGE_SHA"^2 2>/dev/null || echo "")
+          ALL_TEXT="${PR_TITLE} ${PR_BODY} ${COMMIT_MSGS}"
+          MENTIONED_KEYS=$(echo "$ALL_TEXT" | grep -oE '[A-Z]+-[0-9]+' | sort -u | tr '\n' ' ')
+          echo "Keys mentioned in PR: $MENTIONED_KEYS"
+
+          TRANSITIONED_KEYS=""
+
+          SUBTASK_COUNT=$(curl -s -u "$JIRA_EMAIL:$JIRA_API_TOKEN" \
+            "$JIRA_BASE_URL/rest/api/3/issue/$PARENT_KEY?fields=subtasks" \
+            | jq '.fields.subtasks | length // 0')
+
+          build_comment() {
+            jq -n \
+              --arg pr "PR #${PR_NUM} merged to develop by ${MERGED_BY}" \
+              --arg title "Title: ${PR_TITLE}" \
+              --arg status "Status: Deployed to Staging" \
+              '{body:{type:"doc",version:1,content:[{type:"paragraph",content:[{type:"text",text:$pr},{type:"hardBreak"},{type:"text",text:$title},{type:"hardBreak"},{type:"text",text:$status}]}]}}'
+          }
+
+          if [ "$SUBTASK_COUNT" -gt 0 ] 2>/dev/null; then
+            JQL=$(python3 -c "import urllib.parse; print(urllib.parse.quote('parent=$PARENT_KEY'))")
+            SUBTASKS=$(curl -s -u "$JIRA_EMAIL:$JIRA_API_TOKEN" \
+              "$JIRA_BASE_URL/rest/api/3/search/jql?jql=${JQL}&fields=status,summary")
+
+            echo "$SUBTASKS" | jq -r '.issues[] | .key' | while read KEY; do
+              if echo "$MENTIONED_KEYS" | grep -qw "$KEY"; then
+                HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+                  -u "$JIRA_EMAIL:$JIRA_API_TOKEN" \
+                  -H "Content-Type: application/json" \
+                  -d "{\"transition\":{\"id\":\"$STAGING_TRANSITION_ID\"}}" \
+                  "$JIRA_BASE_URL/rest/api/3/issue/$KEY/transitions")
+
+                if [ "$HTTP_CODE" = "204" ]; then
+                  echo "  -> $KEY -> Staging"
+                fi
+              fi
+            done
+
+            COMMENT_BODY=$(build_comment)
+
+            for KEY in $MENTIONED_KEYS; do
+              if [ "$KEY" = "$PARENT_KEY" ]; then
+                continue
+              fi
+              curl -s -o /dev/null \
+                -u "$JIRA_EMAIL:$JIRA_API_TOKEN" \
+                -H "Content-Type: application/json" \
+                -X POST \
+                "$JIRA_BASE_URL/rest/api/3/issue/$KEY/comment" \
+                -d "$COMMENT_BODY"
+            done
+
+            TRANSITIONED_KEYS="$MENTIONED_KEYS"
+            echo "Skipping parent $PARENT_KEY (has subtasks — only uses To Do / In Progress)"
+          else
+            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+              -u "$JIRA_EMAIL:$JIRA_API_TOKEN" \
+              -H "Content-Type: application/json" \
+              -d "{\"transition\":{\"id\":\"$STAGING_TRANSITION_ID\"}}" \
+              "$JIRA_BASE_URL/rest/api/3/issue/$PARENT_KEY/transitions")
+
+            if [ "$HTTP_CODE" = "204" ]; then
+              echo "  -> $PARENT_KEY -> Staging (standalone issue, no subtasks)"
+            else
+              echo "  -> $PARENT_KEY failed (HTTP $HTTP_CODE)"
+            fi
+
+            COMMENT_BODY=$(build_comment)
+
+            curl -s -o /dev/null \
+              -u "$JIRA_EMAIL:$JIRA_API_TOKEN" \
+              -H "Content-Type: application/json" \
+              -X POST \
+              "$JIRA_BASE_URL/rest/api/3/issue/$PARENT_KEY/comment" \
+              -d "$COMMENT_BODY"
+
+            TRANSITIONED_KEYS="$PARENT_KEY"
+          fi
+
+          echo "keys=${TRANSITIONED_KEYS}" >> "$GITHUB_OUTPUT"
+          echo "found=true" >> "$GITHUB_OUTPUT"
+
+      - name: Notify Slack - Staging deployment
+        if: steps.staging.outputs.found == 'true'
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.STAGING_SLACK_WEBHOOK_URL }}
+          JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
+          PR_NUM: ${{ github.event.pull_request.number }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          MERGED_BY: ${{ github.event.pull_request.merged_by.login }}
+          BRANCH: ${{ github.event.pull_request.head.ref }}
+          ISSUE_KEYS: ${{ steps.staging.outputs.keys }}
+          REPO_NAME: ${{ github.repository }}
+        run: |
+          IST_TIME=$(TZ='Asia/Kolkata' date "+%b %d, %Y %I:%M %p IST")
+          UTC_TIME=$(date -u "+%b %d, %Y %I:%M %p UTC")
+
+          JIRA_LINKS=""
+          for KEY in $ISSUE_KEYS; do
+            JIRA_LINKS+="<${JIRA_BASE_URL}/browse/${KEY}|${KEY}> "
+          done
+
+          REPO_URL="https://github.com/${REPO_NAME}"
+
+          REPO_FIELD=$(printf '*Repository:*\n<%s|%s>' "$REPO_URL" "$REPO_NAME")
+          PR_FIELD=$(printf '*PR:*\n<%s|#%s %s>' "$PR_URL" "$PR_NUM" "$PR_TITLE")
+          BRANCH_FIELD=$(printf '*Branch:*\n`%s`' "$BRANCH")
+          MERGED_FIELD=$(printf '*Merged by:*\n%s' "$MERGED_BY")
+          JIRA_FIELD=$(printf '*Jira Issues:*\n%s' "$JIRA_LINKS")
+          STATUS_FIELD=$(printf '*Status:*\n`STAGING`')
+
+          PAYLOAD=$(jq -n \
+            --arg repo_field "$REPO_FIELD" \
+            --arg pr_field "$PR_FIELD" \
+            --arg branch_field "$BRANCH_FIELD" \
+            --arg merged_field "$MERGED_FIELD" \
+            --arg jira_field "$JIRA_FIELD" \
+            --arg status_field "$STATUS_FIELD" \
+            --arg context "${IST_TIME}  |  ${UTC_TIME}" \
+            --arg pr_url "$PR_URL" \
+            '{blocks:[
+              {type:"header",text:{type:"plain_text",text:"Deployed to Staging"}},
+              {type:"section",text:{type:"mrkdwn",text:"*PR merged to develop - moved to Staging*"}},
+              {type:"divider"},
+              {type:"section",fields:[
+                {type:"mrkdwn",text:$repo_field},
+                {type:"mrkdwn",text:$pr_field},
+                {type:"mrkdwn",text:$branch_field},
+                {type:"mrkdwn",text:$merged_field},
+                {type:"mrkdwn",text:$jira_field},
+                {type:"mrkdwn",text:$status_field}
+              ]},
+              {type:"divider"},
+              {type:"context",elements:[{type:"mrkdwn",text:$context}]},
+              {type:"actions",elements:[{type:"button",text:{type:"plain_text",text:"View PR"},url:$pr_url}]}
+            ]}')
+
+          curl -s -X POST -H "Content-Type: application/json" \
+            -d "$PAYLOAD" "$SLACK_WEBHOOK_URL"
+
+  # ============================================================
+  # ON DEPLOY: Production deploy (push to master)
+  # ============================================================
+  deploy:
+    if: github.event_name == 'push' && github.ref_name == 'master'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: production-deploy
+      cancel-in-progress: false
     env:
-      JIRA_PROJECT_KEY: ${{ vars.JIRA_PROJECT_KEY || 'XPRMNTS' }}
-      PRODUCTION_TRANSITION_ID: ${{ vars.JIRA_TRANSITION_PRODUCTION || '3' }}
+      JIRA_PROJECT_KEY: ${{ vars.JIRA_PROJECT_KEY }}
+      PRODUCTION_TRANSITION_ID: ${{ vars.JIRA_TRANSITION_PRODUCTION }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -113,7 +461,7 @@ jobs:
           echo "transitioned_keys=${TRANSITIONED_KEYS}" >> "$GITHUB_OUTPUT"
           echo "skipped_parents=${SKIPPED_PARENTS}" >> "$GITHUB_OUTPUT"
 
-          echo "### Jira Issues → Production" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Jira Issues -> Production" >> "$GITHUB_STEP_SUMMARY"
           echo "Transitioned: ${TRANSITIONED_KEYS}" >> "$GITHUB_STEP_SUMMARY"
           if [ -n "$SKIPPED_PARENTS" ]; then
             echo "Skipped parents (have subtasks): ${SKIPPED_PARENTS}" >> "$GITHUB_STEP_SUMMARY"
@@ -270,23 +618,19 @@ jobs:
           fi
           echo "Collecting PRs since: ${SINCE_DATE} (tag: ${LAST_TAG})"
 
-          # Feature PRs merged to develop
           DEVELOP_PRS=$(gh pr list --base develop --state merged --limit 100 \
             --json number,title,author,mergedAt,headRefName \
             --jq "[.[] | select(.mergedAt > \"${SINCE_DATE}\")]")
 
-          # Feature PRs merged directly to master (not from develop)
           MASTER_PRS=$(gh pr list --base master --state merged --limit 100 \
             --json number,title,author,mergedAt,headRefName \
             --jq "[.[] | select(.mergedAt > \"${SINCE_DATE}\" and .headRefName != \"develop\")]")
 
-          # Combine and deduplicate
           PR_JSON=$(echo "${DEVELOP_PRS}${MASTER_PRS}" | jq -s 'add | unique_by(.number) | sort_by(.mergedAt)')
 
           PR_COUNT=$(echo "$PR_JSON" | jq 'length')
           echo "Found ${PR_COUNT} PRs"
 
-          # Group by author
           AUTHORS=$(echo "$PR_JSON" | jq -r '.[].author.login' | sort -u)
 
           GROUPED_NOTES=""
@@ -411,7 +755,6 @@ jobs:
             URGENCY="Deployment encountered errors. Check GitHub Actions."
           fi
 
-          # Build Jira links
           JIRA_LINKS=""
           if [ -n "$ISSUE_KEYS" ]; then
             for KEY in $ISSUE_KEYS; do
@@ -431,7 +774,6 @@ jobs:
           REPO_URL="https://github.com/${REPO_NAME}"
           RELEASE_URL="${REPO_URL}/releases/tag/${RELEASE_TAG}"
 
-          # Use printf to create actual newlines (jq --arg treats \n as literal)
           REPO_FIELD=$(printf '*Repository:*\n<%s|%s>' "$REPO_URL" "$REPO_NAME")
           VERSION_FIELD=$(printf '*Release Version:*\n`%s`' "$RELEASE_TAG")
           COMMIT_FIELD=$(printf '*Commit:*\n`%s`' "$SHORT_SHA")
@@ -477,3 +819,55 @@ jobs:
 
           curl -s -X POST -H "Content-Type: application/json" \
             -d "$PAYLOAD" "$SLACK_WEBHOOK_URL"
+
+  # ============================================================
+  # ON WORKFLOW DISPATCH: Move subtasks to Production
+  # ============================================================
+  on-deploy-prod:
+    if: >
+      github.event_name == 'workflow_dispatch' &&
+      github.event.inputs.deploy_env == 'production'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Move subtasks to Production then Done, check parent completion
+        env:
+          JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
+          JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
+          JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+          PRODUCTION_TRANSITION_ID: ${{ vars.JIRA_TRANSITION_PRODUCTION }}
+          SUBTASK_KEYS: ${{ github.event.inputs.subtask_keys }}
+        run: |
+          if [ -z "$SUBTASK_KEYS" ]; then
+            echo "No subtask keys provided. Nothing to do."
+            exit 0
+          fi
+
+          echo "Releasing subtasks: $SUBTASK_KEYS"
+
+          PARENT_KEYS=""
+
+          IFS=',' read -ra KEYS <<< "$SUBTASK_KEYS"
+
+          for KEY in "${KEYS[@]}"; do
+            KEY=$(echo "$KEY" | xargs)
+            [ -z "$KEY" ] && continue
+
+            if ! echo "$KEY" | grep -qE '^[A-Z]+-[0-9]+$'; then
+              echo "  -> Skipping invalid key: $KEY"
+              continue
+            fi
+
+            echo "--- $KEY ---"
+
+            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+              -u "$JIRA_EMAIL:$JIRA_API_TOKEN" \
+              -H "Content-Type: application/json" \
+              -d "{\"transition\":{\"id\":\"$PRODUCTION_TRANSITION_ID\"}}" \
+              "$JIRA_BASE_URL/rest/api/3/issue/$KEY/transitions")
+
+            if [ "$HTTP_CODE" = "204" ]; then
+              echo "  -> $KEY -> Production (manual Done required)"
+            else
+              echo "  -> $KEY -> Production failed (HTTP $HTTP_CODE)"
+            fi
+          done
