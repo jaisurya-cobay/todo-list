@@ -608,13 +608,14 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          LAST_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+          LAST_TAG=$(git describe --tags --abbrev=0 HEAD 2>/dev/null || echo "")
 
           if [ -n "$LAST_TAG" ]; then
             TAG_EPOCH=$(git log -1 --format=%at "$LAST_TAG")
             SINCE_DATE=$(date -u -d "@${TAG_EPOCH}" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -r "${TAG_EPOCH}" +%Y-%m-%dT%H:%M:%SZ)
           else
-            SINCE_DATE="2000-01-01T00:00:00Z"
+            # No previous tag — only include PRs from last 30 days instead of all time
+            SINCE_DATE=$(date -u -d '30 days ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -v-30d +%Y-%m-%dT%H:%M:%SZ)
           fi
           echo "Collecting PRs since: ${SINCE_DATE} (tag: ${LAST_TAG})"
 
