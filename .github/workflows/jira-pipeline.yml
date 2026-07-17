@@ -34,6 +34,7 @@ on:
 
 permissions:
   contents: write
+  deployments: write
 
 jobs:
 
@@ -187,6 +188,15 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - name: Start deployment record (staging)
+        id: deployment
+        uses: ./.github/actions/record-deployment
+        with:
+          environment: staging
+          ref: ${{ github.event.pull_request.merge_commit_sha }}
+          description: Staging - PR #${{ github.event.pull_request.number }}
+          log-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
 
       - name: Move only referenced subtasks to Staging
         id: staging
@@ -354,6 +364,16 @@ jobs:
           curl -s -X POST -H "Content-Type: application/json" \
             -d "$PAYLOAD" "$SLACK_WEBHOOK_URL"
 
+      - name: Finish deployment record (staging)
+        if: always() && steps.deployment.outputs.deployment-id
+        uses: ./.github/actions/record-deployment
+        with:
+          environment: staging
+          deployment-id: ${{ steps.deployment.outputs.deployment-id }}
+          state: ${{ job.status == 'success' && 'success' || 'failure' }}
+          description: PR #${{ github.event.pull_request.number }} by ${{ github.event.pull_request.merged_by.login }}
+          log-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
   # ============================================================
   # ON DEPLOY: Production deploy (push to master)
   # ============================================================
@@ -371,6 +391,15 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - name: Start deployment record (production)
+        id: deployment
+        uses: ./.github/actions/record-deployment
+        with:
+          environment: production
+          ref: ${{ github.sha }}
+          description: Production deploy ${{ github.sha }}
+          log-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
 
       - name: Set release variables
         run: |
@@ -820,6 +849,16 @@ jobs:
 
           curl -s -X POST -H "Content-Type: application/json" \
             -d "$PAYLOAD" "$SLACK_WEBHOOK_URL"
+
+      - name: Finish deployment record (production)
+        if: always() && steps.deployment.outputs.deployment-id
+        uses: ./.github/actions/record-deployment
+        with:
+          environment: production
+          deployment-id: ${{ steps.deployment.outputs.deployment-id }}
+          state: ${{ job.status == 'success' && 'success' || 'failure' }}
+          description: ${{ env.RELEASE_TAG }}
+          log-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
 
   # ============================================================
   # ON WORKFLOW DISPATCH: Move subtasks to Production
