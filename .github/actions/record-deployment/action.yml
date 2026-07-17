@@ -1,0 +1,92 @@
+name: 'Record GitHub Deployment'
+description: >
+  Records a deployment in the GitHub Deployments API so history and current
+  version per environment are visible (in GitHub's Environments UI, the API,
+  and any dashboard such as Backstage). Two-phase: call once with no state to
+  create the deployment (marks it in_progress and returns its id), then again
+  with the id + final state to close it out.
+
+inputs:
+  environment:
+    description: 'Target environment: qa | staging | production'
+    required: true
+  ref:
+    description: 'Git ref or SHA being deployed'
+    required: false
+    default: ${{ github.sha }}
+  deployment-id:
+    description: 'Existing deployment id. Empty = create a new deployment (phase 1).'
+    required: false
+    default: ''
+  state:
+    description: 'Final status when deployment-id is provided (success | failure | error | inactive).'
+    required: false
+    default: ''
+  description:
+    description: 'Human-friendly label, e.g. the release/version tag.'
+    required: false
+    default: ''
+  log-url:
+    description: 'URL to the run logs (shown against the deployment).'
+    required: false
+    default: ''
+
+outputs:
+  deployment-id:
+    description: 'Id of the created deployment (phase 1).'
+    value: ${{ steps.record.outputs.deployment-id }}
+
+runs:
+  using: 'composite'
+  steps:
+    - id: record
+      uses: actions/github-script@v7
+      # Inputs are passed via env (not string-interpolated into the script)
+      # to avoid script injection — the same reason we quote shell vars.
+      env:
+        ENVIRONMENT: ${{ inputs.environment }}
+        REF: ${{ inputs.ref }}
+        DEPLOYMENT_ID: ${{ inputs.deployment-id }}
+        STATE: ${{ inputs.state }}
+        DESCRIPTION: ${{ inputs.description }}
+        LOG_URL: ${{ inputs.log-url }}
+      with:
+        script: |
+          const { ENVIRONMENT, REF, DEPLOYMENT_ID, STATE, DESCRIPTION, LOG_URL } = process.env;
+          const [owner, repo] = process.env.GITHUB_REPOSITORY.split('/');
+
+          if (!DEPLOYMENT_ID) {
+            // Phase 1 — create the immutable deployment record.
+            // This captures: environment, ref/sha, creator (the token's actor), created_at.
+            const dep = await github.rest.repos.createDeployment({
+              owner, repo,
+              ref: REF,
+              environment: ENVIRONMENT,
+              description: DESCRIPTION || `Deploy to ${ENVIRONMENT}`,
+              auto_merge: false,        // do NOT merge the default branch into ref
+              required_contexts: [],    // do NOT block on other status checks
+              transient_environment: false,
+              production_environment: ENVIRONMENT === 'production',
+            });
+            core.setOutput('deployment-id', dep.data.id);
+            await github.rest.repos.createDeploymentStatus({
+              owner, repo,
+              deployment_id: dep.data.id,
+              state: 'in_progress',
+              environment: ENVIRONMENT,
+              description: DESCRIPTION || `Deploying to ${ENVIRONMENT}`,
+              log_url: LOG_URL || undefined,
+            });
+            core.info(`Created deployment ${dep.data.id} for ${ENVIRONMENT} @ ${REF}`);
+          } else {
+            // Phase 2 — append the final status (success/failure) with its own timestamp.
+            await github.rest.repos.createDeploymentStatus({
+              owner, repo,
+              deployment_id: Number(DEPLOYMENT_ID),
+              state: STATE,
+              environment: ENVIRONMENT,
+              description: DESCRIPTION || `Deployment ${STATE}`,
+              log_url: LOG_URL || undefined,
+            });
+            core.info(`Set deployment ${DEPLOYMENT_ID} -> ${STATE}`);
+          }
